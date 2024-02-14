@@ -2,6 +2,10 @@
 
 This custom component for [Home Assistant](https://www.home-assistant.io) is supporting active monitoring of the [Hai](https://gethai.com) [shower head](https://gethai.com/products/hai-showerhead) via BLE.
 
+## PoC
+
+The PoC script is [here](https://gist.github.com/taylorfinnell/87c79939a63ec2cb607ed2ebe28db5ce). It will connect and display information.
+
 ## Additional Info
 
 The integration should work out of the box. In order to discover the hydrao device, you should activate it with running water until the integration is fully recognized by the config flow.
