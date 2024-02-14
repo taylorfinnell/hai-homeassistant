@@ -2,10 +2,20 @@
 
 This custom component for [Home Assistant](https://www.home-assistant.io) is supporting active monitoring of the [Hai](https://gethai.com) [shower head](https://gethai.com/products/hai-showerhead) via BLE.
 
+![preview](https://snaps.screensnapr.io/7d42c764d1e16af2d3475c9f6b9a66)
+
 ## PoC
 
 The PoC script is [here](https://gist.github.com/taylorfinnell/87c79939a63ec2cb607ed2ebe28db5ce). It will connect and display information.
 
+## Whats Missing
+
+- Flow sensors
+- I think it struggles to connect in time in some cases
+- The config_flow is a little broken, but it works
+- I don't know what happens if you have multiple shower heads
+- Technically the whole Hai app can be replaced with home assistant. You can write the LED configurations, water thresholds, etc
+  
 ## Additional Info
 
 The integration should work out of the box. In order to discover the hydrao device, you should activate it with running water until the integration is fully recognized by the config flow.
