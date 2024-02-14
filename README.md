@@ -18,7 +18,7 @@ The PoC script is [here](https://gist.github.com/taylorfinnell/87c79939a63ec2cb6
   
 ## Additional Info
 
-The integration should work out of the box. In order to discover the hydrao device, you should activate it with running water until the integration is fully recognized by the config flow.
+The integration should work out of the box. In order to discover the Hai device, you should activate it with running water until the integration is fully recognized by the config flow.
 It works most of the times.
 
 You will see the Average and Current Temperature of the water, the current and total volume of the consumed water (across all showers) and the duration of the shower.
