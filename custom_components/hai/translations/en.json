@@ -1,0 +1,8 @@
+{
+    "config": {
+        "abort": {
+            "not_supported": "This device is not supported by the hai integration.",
+            "no_devices_found": "No hai devices found. You may need to make sure your water is running."
+        }
+   }
+}

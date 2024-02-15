@@ -1,18 +1,16 @@
-"""Config flow for Hai BlE integration."""
+"""Config flow for Hai BLE integration."""
 
 from __future__ import annotations
 
-import dataclasses
 import logging
+
 from typing import Any
 
-from .Hai import HaiBluetoothDeviceData, HaiDevice
-from bleak import BleakError
+from .hai_ble import HaiBluetoothDeviceData as DeviceData
 import voluptuous as vol
 
-from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import (
-    BluetoothServiceInfo,
+    BluetoothServiceInfoBleak,
     async_discovered_service_info,
 )
 from homeassistant.config_entries import ConfigFlow
@@ -23,184 +21,78 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-
-@dataclasses.dataclass
-class Discovery:
-    """A discovered bluetooth device."""
-
-    name: str
-    discovery_info: BluetoothServiceInfo
-    device: HaiDevice
-
-
-def get_name(device: HaiDevice) -> str:
-    """Generate name with identifier for device."""
-
-    return f"{device.name}"
-
-
-class HaiDeviceUpdateError(Exception):
-    """Custom error class for device updates."""
-
-
 class HaiConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Hai BLE."""
+    """Handle a config flow for hai."""
 
     VERSION = 1
 
     def __init__(self) -> None:
         """Initialize the config flow."""
-        self._discovered_device: Discovery | None = None
-        self._discovered_devices: dict[str, Discovery] = {}
-
-    async def _get_device_data(self, discovery_info: BluetoothServiceInfo) -> HaiDevice:
-        ble_device = bluetooth.async_ble_device_from_address(
-            self.hass, discovery_info.address, connectable=True
-        )
-        _LOGGER.debug("in _get_device_data")
-        if ble_device is None:
-            _LOGGER.debug("no ble_device in _get_device_data")
-            raise HaiDeviceUpdateError("No ble_device")
-
-        _LOGGER.debug("Getting Device")
-        hai = HaiBluetoothDeviceData(_LOGGER)
-        _LOGGER.debug("Got Device Device")
-        try:
-            _LOGGER.debug("Create Device. Now updating")
-            data = await hai.update_device(ble_device)
-            _LOGGER.debug("Created Device")
-            data.name = discovery_info.advertisement.local_name
-            # data.name = discovery_info.address
-            data.address = discovery_info.address
-            data.identifier = discovery_info.advertisement.local_name
-        except BleakError as err:
-            _LOGGER.error(
-                "Error connecting to and getting data from %s: %s",
-                discovery_info.address,
-                err,
-            )
-            raise HaiDeviceUpdateError("Failed getting device data") from err
-        except Exception as err:
-            _LOGGER.error(
-                "Unknown error occurred from %s: %s", discovery_info.address, err
-            )
-            raise err
-        return data
+        self._discovery_info: BluetoothServiceInfoBleak | None = None
+        self._discovered_device: DeviceData | None = None
+        self._discovered_devices: dict[str, str] = {}
 
     async def async_step_bluetooth(
-        self, discovery_info: BluetoothServiceInfo
+        self, discovery_info: BluetoothServiceInfoBleak
     ) -> FlowResult:
         """Handle the bluetooth discovery step."""
-        _LOGGER.debug(
-            "Discovered BT device: address %s name  %s",
-            discovery_info.address,
-            discovery_info.name,
-        )
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
-        _LOGGER.debug("Not Configured")
-        try:
-            device = await self._get_device_data(discovery_info)
-        except HaiDeviceUpdateError:
-            return self.async_abort(reason="cannot_connect")
-        except Exception:  # pylint: disable=broad-except
-            return self.async_abort(reason="unknown")
-
-        name = get_name(device)
-        self.context["title_placeholders"] = {"name": name}
-        self._discovered_device = Discovery(name, discovery_info, device)
-
+        device = DeviceData()
+        if not device.supported(discovery_info):
+            return self.async_abort(reason="not_supported")
+        self._discovery_info = discovery_info
+        self._discovered_device = device
         return await self.async_step_bluetooth_confirm()
 
     async def async_step_bluetooth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Confirm discovery."""
-        _LOGGER.debug("User Confirm Step %s", user_input)
+        assert self._discovered_device is not None
+        device = self._discovered_device
+        assert self._discovery_info is not None
+        discovery_info = self._discovery_info
+        title = device.title or device.get_device_name() or discovery_info.name
         if user_input is not None:
-            return self.async_create_entry(
-                title=self.context["title_placeholders"]["name"], data={}
-            )
+            return self.async_create_entry(title=title, data={})
 
         self._set_confirm_only()
+        placeholders = {"name": title}
+        self.context["title_placeholders"] = placeholders
         return self.async_show_form(
-            step_id="bluetooth_confirm",
-            description_placeholders=self.context["title_placeholders"],
+            step_id="bluetooth_confirm", description_placeholders=placeholders
         )
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle the user step to pick discovered device."""
-        _LOGGER.debug("User Step to configure %s", user_input)
         if user_input is not None:
-            _LOGGER.debug("User Step to configure")
             address = user_input[CONF_ADDRESS]
             await self.async_set_unique_id(address, raise_on_progress=False)
             self._abort_if_unique_id_configured()
-
-            discovery = self._discovered_devices[address]
-
-            self.context["title_placeholders"] = {
-                "name": discovery.name,
-            }
-
-            self._discovered_device = discovery
-
-            return self.async_create_entry(title=discovery.name, data={})
+            return self.async_create_entry(
+                title=self._discovered_devices[address], data={}
+            )
 
         current_addresses = self._async_current_ids()
-        for discovery_info in async_discovered_service_info(self.hass):
+        for discovery_info in async_discovered_service_info(self.hass, False):
             address = discovery_info.address
             if address in current_addresses or address in self._discovered_devices:
                 continue
-
-            _LOGGER.debug("No Local Name %s", discovery_info.advertisement.local_name)
-
-            if discovery_info.advertisement.local_name is None:
-                _LOGGER.debug("No Local Name")
-                continue
-
-            if not (discovery_info.advertisement.local_name.startswith("hai")):
-                _LOGGER.debug("Device is not Hai")
-                continue
-
-            _LOGGER.debug("Found My Device")
-            _LOGGER.debug("Hai Discovery address: %s", address)
-            _LOGGER.debug("Hai Man Data: %s", discovery_info.manufacturer_data)
-            _LOGGER.debug("Hai advertisement: %s", discovery_info.advertisement)
-            _LOGGER.debug("Hai device: %s", discovery_info.device)
-            _LOGGER.debug("Hai service data: %s", discovery_info.service_data)
-            _LOGGER.debug("Hai service uuids: %s", discovery_info.service_uuids)
-            _LOGGER.debug("Hai rssi: %s", discovery_info.rssi)
-            _LOGGER.debug(
-                "Hai advertisement: %s", discovery_info.advertisement.local_name
-            )
-            try:
-                device = await self._get_device_data(discovery_info)
-                _LOGGER.debug("Getting Device Data")
-            except HaiDeviceUpdateError:
-                _LOGGER.debug("Cannot Connect")
-                return self.async_abort(reason="cannot_connect")
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.debug("Cannot Connect - Unknown")
-                return self.async_abort(reason="unknown")
-            _LOGGER.debug("Getting Name")
-            name = get_name(device)
-            self._discovered_devices[address] = Discovery(name, discovery_info, device)
+            device = DeviceData()
+            if device.supported(discovery_info):
+                self._discovered_devices[address] = (
+                    device.title or device.get_device_name() or discovery_info.name
+                )
 
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
 
-        titles = {
-            address: get_name(discovery.device)
-            for (address, discovery) in self._discovered_devices.items()
-        }
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_ADDRESS): vol.In(titles),
-                },
+                {vol.Required(CONF_ADDRESS): vol.In(self._discovered_devices)}
             ),
         )

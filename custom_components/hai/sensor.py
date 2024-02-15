@@ -1,11 +1,15 @@
-"""Support for Hai ble sensors."""
+"""Support for Hai BLE sensors."""
 from __future__ import annotations
 
-import logging
-
-from .Hai import HaiDevice
+from .hai_ble import HaiSensor, SensorUpdate
 
 from homeassistant import config_entries
+from homeassistant.components.bluetooth.passive_update_processor import (
+    PassiveBluetoothDataProcessor,
+    PassiveBluetoothDataUpdate,
+    PassiveBluetoothProcessorCoordinator,
+    PassiveBluetoothProcessorEntity,
+)
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -13,112 +17,112 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import (
-    CONCENTRATION_PARTS_PER_BILLION,
-    CONCENTRATION_PARTS_PER_MILLION,
-    LIGHT_LUX,
+    UnitOfVolume,
     PERCENTAGE,
-    UnitOfPressure,
-    UnitOfTemperature,
+    EntityCategory,
     UnitOfTime,
-    UnitOfElectricPotential,
-    CONDUCTIVITY,
-    VOLUME,
+    UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
-from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import StateType
-from homeassistant.helpers.update_coordinator import (
-    CoordinatorEntity,
-    DataUpdateCoordinator,
-)
-from homeassistant.util.unit_system import METRIC_SYSTEM
+from homeassistant.helpers.sensor import sensor_device_info_to_hass_device_info
 
-from .const import DOMAIN, WATER_VOLUME
+from .const import DOMAIN
+from .device import device_key_to_bluetooth_entity_key
 
-_LOGGER = logging.getLogger(__name__)
+SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
+    ###
+    # Diag
+    ###
 
-SENSORS_MAPPING_TEMPLATE: dict[str, SensorEntityDescription] = {
-    "current_volume": SensorEntityDescription(
-        key="current_volume",
-        name="Current shower volume",
-        force_update=True,
-        native_unit_of_measurement=WATER_VOLUME,
+    HaiSensor.BATTERY_VOLTAGE: SensorEntityDescription(
+        key=HaiSensor.BATTERY_VOLTAGE,
+        device_class=SensorDeviceClass.BATTERY,
+        native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        device_class=SensorDeviceClass.VOLUME,
-        icon="mdi:shower-head",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        name="Battery Voltage",
     ),
-    "total_volume": SensorEntityDescription(
-        key="total_volume",
-        name="Total shower volume",
-        native_unit_of_measurement=WATER_VOLUME,
-        force_update=True,
-        device_class=SensorDeviceClass.VOLUME,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:shower-head",
-    ),
-    "current_temperature": SensorEntityDescription(
-        key="current_temperature",
-        name="Current shower temperature",
-        force_update=True,
-        state_class=SensorStateClass.MEASUREMENT,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        icon="mdi:thermometer-water",
-        suggested_display_precision=1,
-    ),
-    "average_temperature": SensorEntityDescription(
-        key="average_temperature",
-        name="Current shower avg temperature",
-        force_update=True,
-        state_class=SensorStateClass.MEASUREMENT,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        icon="mdi:thermometer-water",
-        suggested_display_precision=1,
-    ),
-    "current_duration": SensorEntityDescription(
-        key="current_duration",
-        name="Current shower duration",
-        force_update=True,
+
+    ###
+    # Current Shower
+    ###
+
+    HaiSensor.CURRENT_SHOWER_DURATION: SensorEntityDescription(
+        key=HaiSensor.CURRENT_SHOWER_DURATION,
         state_class=SensorStateClass.MEASUREMENT,
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
-        icon="mdi:timer-outline",
-        suggested_display_precision=1,
+        name="Current Shower Duration",
     ),
-    "last_shower_duration": SensorEntityDescription(
-        key="last_shower_duration",
-        name="Last shower Duration",
-        force_update=True,
-        state_class=SensorStateClass.MEASUREMENT,
-        device_class=SensorDeviceClass.DURATION,
-        native_unit_of_measurement=UnitOfTime.SECONDS,
-        icon="mdi:timer-outline",
-        suggested_display_precision=1,
-    ),
-    "last_shower_temperature": SensorEntityDescription(
-        key="last_shower_temperature",
-        name="Last shower temperature",
-        force_update=True,
+
+    HaiSensor.CURRENT_SHOWER_TEMP: SensorEntityDescription(
+        key=HaiSensor.CURRENT_SHOWER_TEMP,
         state_class=SensorStateClass.MEASUREMENT,
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        icon="mdi:thermometer-water",
-        suggested_display_precision=1,
+        name="Current Temperature",
     ),
-    "last_shower_volume": SensorEntityDescription(
-        key="last_shower_volume",
-        name="Last shower volume",
-        force_update=True,
-        native_unit_of_measurement=WATER_VOLUME,
+
+    HaiSensor.CURRENT_SHOWER_VOLUME: SensorEntityDescription(
+        key=HaiSensor.CURRENT_SHOWER_VOLUME,
+        native_unit_of_measurement=UnitOfVolume.MILLILITERS,
         state_class=SensorStateClass.MEASUREMENT,
         device_class=SensorDeviceClass.VOLUME,
-        icon="mdi:shower-head",
+        name="Current Shower Volume",
     ),
-    # TODO: Flow Rate
+
+    ###
+    # Last Shower
+    ###
+
+    HaiSensor.LAST_SHOWER_VOLUME: SensorEntityDescription(
+        key=HaiSensor.LAST_SHOWER_VOLUME,
+        native_unit_of_measurement=UnitOfVolume.MILLILITERS,
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.VOLUME,
+        name="Last Shower Volume",
+    ),
+
+    HaiSensor.LAST_SHOWER_AVG_TEMP: SensorEntityDescription(
+        key=HaiSensor.LAST_SHOWER_AVG_TEMP,
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        name="Last Shower Avg Temperature",
+    ),
+
+    HaiSensor.LAST_SHOWER_DURATION: SensorEntityDescription(
+        key=HaiSensor.LAST_SHOWER_DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        name="Last Shower Duration",
+    ),
 }
+
+
+def sensor_update_to_bluetooth_data_update(
+    sensor_update: SensorUpdate,
+) -> PassiveBluetoothDataUpdate:
+    """Convert a sensor update to a bluetooth data update."""
+    return PassiveBluetoothDataUpdate(
+        devices={
+            device_id: sensor_device_info_to_hass_device_info(device_info)
+            for device_id, device_info in sensor_update.devices.items()
+        },
+        entity_descriptions={
+            device_key_to_bluetooth_entity_key(device_key): SENSOR_DESCRIPTIONS[
+                device_key.key
+            ]
+            for device_key in sensor_update.entity_descriptions
+        },
+        entity_data={
+            device_key_to_bluetooth_entity_key(device_key): sensor_values.native_value
+            for device_key, sensor_values in sensor_update.entity_values.items()
+        },
+        entity_names={},
+    )
 
 
 async def async_setup_entry(
@@ -127,67 +131,44 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Hai BLE sensors."""
-    is_metric = hass.config.units is METRIC_SYSTEM
-
-    coordinator: DataUpdateCoordinator[HaiDevice] = hass.data[DOMAIN][entry.entry_id]
-    sensors_mapping = SENSORS_MAPPING_TEMPLATE.copy()
-    entities = []
-    _LOGGER.debug("got sensors: %s", coordinator.data.sensors)
-    for sensor_type, sensor_value in coordinator.data.sensors.items():
-        if sensor_type not in sensors_mapping:
-            _LOGGER.debug(
-                "Unknown sensor type detected: %s, %s",
-                sensor_type,
-                sensor_value,
-            )
-            continue
-        entities.append(
-            HaiSensor(coordinator, coordinator.data, sensors_mapping[sensor_type])
+    coordinator: PassiveBluetoothProcessorCoordinator = hass.data[DOMAIN][
+        entry.entry_id
+    ]
+    processor = PassiveBluetoothDataProcessor(sensor_update_to_bluetooth_data_update)
+    entry.async_on_unload(
+        processor.async_add_entities_listener(
+            HaiBluetoothSensorEntity, async_add_entities
         )
+    )
+    entry.async_on_unload(
+        coordinator.async_register_processor(processor, SensorEntityDescription)
+    )
 
-    async_add_entities(entities)
 
-
-class HaiSensor(CoordinatorEntity[DataUpdateCoordinator[HaiDevice]], SensorEntity):
-    """Hai BLE sensors for the device."""
-
-    # _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_has_entity_name = True
-
-    def __init__(
-        self,
-        coordinator: DataUpdateCoordinator,
-        hai_device: HaiDevice,
-        entity_description: SensorEntityDescription,
-    ) -> None:
-        """Populate the Hai entity with relevant data."""
-        super().__init__(coordinator)
-        self.entity_description = entity_description
-
-        name = f"{hai_device.name} {hai_device.identifier}"
-
-        self._attr_unique_id = f"{name}_{entity_description.key}"
-
-        self._id = hai_device.address
-        self._attr_device_info = DeviceInfo(
-            connections={
-                (
-                    CONNECTION_BLUETOOTH,
-                    hai_device.address,
-                )
-            },
-            name=name,
-            manufacturer="Hai",
-            model="Shower Head Spa",
-            hw_version=hai_device.hw_version,
-            sw_version=hai_device.sw_version,
-        )
-        _LOGGER.debug("Created Sensor: %s", entity_description.key)
+class HaiBluetoothSensorEntity(
+    PassiveBluetoothProcessorEntity[PassiveBluetoothDataProcessor[str | int | None]],
+    SensorEntity,
+):
+    """Representation of a Hai sensor."""
 
     @property
-    def native_value(self) -> StateType:
-        """Return the value reported by the sensor."""
-        try:
-            return self.coordinator.data.sensors[self.entity_description.key]
-        except KeyError:
-            return None
+    def native_value(self) -> str | int | None:
+        """Return the native value."""
+        return self.processor.entity_data.get(self.entity_key)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available.
+
+        The sensor is only created when the device is seen.
+
+        Since these are sleepy devices which stop broadcasting
+        when not in use, we can't rely on the last update time
+        so once we have seen the device we always return True.
+        """
+        return True
+
+    @property
+    def assumed_state(self) -> bool:
+        """Return True if the device is no longer broadcasting."""
+        return not self.processor.available
