@@ -25,11 +25,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Hai device from a config entry."""
 
     _LOGGER.debug("Started Init")
+
     hass.data.setdefault(DOMAIN, {})
     address = entry.unique_id
 
-    elevation = hass.config.elevation
-    is_metric = hass.config.units is METRIC_SYSTEM
     assert address is not None
 
     ble_device = bluetooth.async_ble_device_from_address(hass, address)
@@ -40,10 +39,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def _async_update_method():
         """Get data from Hai BLE."""
         ble_device = bluetooth.async_ble_device_from_address(hass, address)
-        hai = HaiBluetoothDeviceData(_LOGGER)
+        hai = HaiBluetoothDeviceData()
 
         try:
-            data = await hai.update_device(ble_device)
+            data = await hai.poll_ble_device(ble_device)
         except Exception as err:
             raise UpdateFailed(f"Unable to fetch data: {err}") from err
 

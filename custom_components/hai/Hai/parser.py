@@ -10,15 +10,10 @@ from collections import namedtuple
 from datetime import datetime
 import logging
 
-# from logging import Logger
-from math import exp
-from typing import Any, Callable, Tuple
-
-from bleak import BleakClient, BleakError
+from bleak import BleakError
 from bleak.backends.device import BLEDevice
-from bleak_retry_connector import establish_connection
-
-READ_UUID = "0000ff02-0000-1000-8000-00805f9b34fb"
+from bleak_retry_connector import establish_connection, BleakClientWithServiceCache
+from bluetooth_sensor_state_data import BluetoothData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,91 +31,111 @@ class HaiDevice:
         default_factory=lambda: {}
     )
 
+class HaiGattReader:
+    XOR_DECRYPTION_KEY = [1, 2, 3, 4, 5, 6]  # Yes, for real
 
-XOR_DECRYPTION_KEY = [1, 2, 3, 4, 5, 6]  # Yes, for real
+    def __init__(self, client: BleakClientWithServiceCache):
+        self._client = client
+
+    def decrypt(self, data, key):
+        return bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
+
+    async def read_raw(self, characteristic_id: str):
+        data = await self._client.read_gatt_char(characteristic_id)
+
+        _LOGGER.debug("Reading raw characteristic for Hai %s=%s", characteristic_id, data.hex())
+
+        return data
+
+    async def read(self, characteristic_id: str, byte_layout: str, encrypted: bool):
+        data = await self._client.read_gatt_char(characteristic_id)
+
+        _LOGGER.debug("Reading packed characteristic for Hai %s=%s", characteristic_id, data.hex())
+
+        if encrypted:
+            data = self.decrypt(data, HaiGattReader.XOR_DECRYPTION_KEY)
+
+        return struct.unpack(byte_layout, data)
 
 
 # pylint: disable=too-many-locals
 # pylint: disable=too-many-branches
-class HaiBluetoothDeviceData:
+class HaiBluetoothDeviceData(BluetoothData):
     """Data for Hai BLE sensors."""
 
-    _event: asyncio.Event | None
-    _command_data: bytearray | None
+    # habluetooth.models.BluetoothServiceInfoBleak
+    def supported(self, service_info):
+        advert = service_info.advertisement
 
-    def __init__(
-        self,
-        logger: logging.Logger,
-    ):
-        super().__init__()
-        self.logger = logger
-        self.logger.debug("In Device Data")
+        if not advert or not advert.local_name:
+            return False
 
-    def decrypt(self, data, key=XOR_DECRYPTION_KEY):
-        return bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
+        _LOGGER.debug("Checking if %s is supported", advert.local_name)
 
-    async def _get_status(self, client: BleakClient, device: HaiDevice) -> HaiDevice:
-        _LOGGER.debug("Getting Status")
+        return "hai" in advert.local_name
+
+    async def _get_status(self, client: BleakClientWithServiceCache, device: HaiDevice) -> HaiDevice:
+        reader = HaiGattReader(client)
 
         # Current session
-        current_session_data = await client.read_gatt_char(
-            "e6221401-e12f-40f2-b0f5-aaa011c0aa8d"
-        )
-        session_id = struct.unpack("<I", current_session_data)[0]
+        (session_id,) = await reader.read("e6221401-e12f-40f2-b0f5-aaa011c0aa8d", "<I", encrypted=False)
+        _LOGGER.debug("Got Hai session %s", session_id)
 
-        if session_id == 0:
-            _LOGGER.debug("No hai session")
-        else:
-            _LOGGER.debug("Hai session %x", session_id)
+        # Software version
+        (software_version,) = await reader.read("e622150b-e12f-40f2-b0f5-aaa011c0aa8d", "<H", encrypted=False)
+        device.sw_version = str(float(software_version) / 100.0)
+        _LOGGER.debug("Got Hai sw_version %s", device.sw_version)
 
-            # Lifetime consumption (XORd)
-            lifetime_consumption_data = await client.read_gatt_char(
-                "e6221408-e12f-40f2-b0f5-aaa011c0aa8d"
+        (hardware_version,) = await reader.read("e622150c-e12f-40f2-b0f5-aaa011c0aa8d", "<B", encrypted=False)
+        device.hw_version = str(hardware_version).upper()
+        _LOGGER.debug("Got Hai hw_version %s", device.hw_version)
+
+        product_id = await reader.read_raw("e622140b-e12f-40f2-b0f5-aaa011c0aa8d")
+        device.identifier = str(product_id.hex()).upper()
+        _LOGGER.debug("Got Hai product_id %s", device.identifier)
+
+        if session_id != 0:
+            # Lifetime consumption
+            (lifetime_consumption_data,) = await reader.read(
+                "e6221408-e12f-40f2-b0f5-aaa011c0aa8d",
+                "<I",
+                encrypted=True
             )
-            lifetime_consumption_data = self.decrypt(lifetime_consumption_data)
-            device.sensors["total_volume"] = float(
-                struct.unpack("<I", lifetime_consumption_data)[0]
-            )
+            device.sensors["total_volume"] = lifetime_consumption_data
 
             # Current Temp
-            current_temp_data = await client.read_gatt_char(
-                "e6221402-e12f-40f2-b0f5-aaa011c0aa8d"
+            (current_temp_data,) = await reader.read(
+                "e6221402-e12f-40f2-b0f5-aaa011c0aa8d",
+                "<H",
+                encrypted=False
             )
-            device.sensors["current_temperature"] = (
-                struct.unpack("<H", current_temp_data)[0] / 100
-            )
+            device.sensors["current_temperature"] = float(current_temp_data) / 100.0
 
-            # Current Consumption/Volume (XORed)
-            current_consumption_data = await client.read_gatt_char(
-                "e6221404-e12f-40f2-b0f5-aaa011c0aa8d"
+            # Current Consumption/Volume
+            (current_consumption_data,) = await reader.read(
+                "e6221404-e12f-40f2-b0f5-aaa011c0aa8d",
+                "<I",
+                encrypted=True
             )
-            current_consumption_data = self.decrypt(current_consumption_data)
-            device.sensors["current_volume"] = float(
-                struct.unpack("<I", current_consumption_data)[0]
-            )
+            device.sensors["current_volume"] = float(current_consumption_data)
 
             # Current duration
-            current_duration_data = await client.read_gatt_char(
+            (current_duration_data,) = await reader.read(
                 "e6221406-e12f-40f2-b0f5-aaa011c0aa8d",
+                "<H",
+                encrypted=True
             )
-            current_duration_data = self.decrypt(current_duration_data)
-            device.sensors["current_duration"] = float(
-                struct.unpack("<h", current_duration_data)[0]
-            )
+            device.sensors["current_duration"] = float(current_duration_data)
 
             # Avg Temp
-            average_temp_data = await client.read_gatt_char(
-                "e6221403-e12f-40f2-b0f5-aaa011c0aa8d"
+            (average_temp_data,) = await reader.read(
+                "e6221403-e12f-40f2-b0f5-aaa011c0aa8d",
+                "<H",
+                encrypted=False
             )
-            device.sensors["average_temperature"] = float(
-                struct.unpack("<h", average_temp_data)[0] / 100
-            )
+            device.sensors["average_temperature"] = float(average_temp_data) / 100.0
 
         # Now parse the last shower.
-        last_shower_data = await client.read_gatt_char(
-            "e622140a-e12f-40f2-b0f5-aaa011c0aa8d"
-        )
-        last_shower_data = self.decrypt(last_shower_data)
         (
             session,
             temp_celcius,
@@ -128,33 +143,31 @@ class HaiBluetoothDeviceData:
             volume_ml,
             start_ts,
             initial_temp,
-        ) = struct.unpack("<IHHIIH", last_shower_data)
+        ) = await reader.read("e622140a-e12f-40f2-b0f5-aaa011c0aa8d", "<IHHIIH", encrypted=True)
         device.sensors["last_shower_duration"] = duration_seconds
-        device.sensors["last_shower_temperature"] = temp_celcius / 100
+        device.sensors["last_shower_temperature"] = temp_celcius / 100.0
         device.sensors["last_shower_volume"] = volume_ml
 
         _LOGGER.debug("Got Status")
 
         return device
 
-    async def update_device(self, ble_device: BLEDevice) -> HaiDevice:
+    async def poll_ble_device(self, ble_device: BLEDevice) -> HaiDevice:
         """Connects to the device through BLE and retrieves relevant data"""
-        _LOGGER.debug("Update Device")
+
         client = await establish_connection(
-            BleakClient, ble_device, ble_device.address, max_attempts=1
+            BleakClientWithServiceCache, ble_device, ble_device.address, max_attempts=1
         )
-        _LOGGER.debug("Got Client")
-        # await client.pair()
+
         device = HaiDevice()
-        _LOGGER.debug("Made Device")
         try:
             device = await self._get_status(client, device)
-            device.name = ble_device.address  # ble_device.name
+            device.name = ble_device.name
             device.address = ble_device.address
-            _LOGGER.debug("device.name: %s", device.name)
-            _LOGGER.debug("device.address: %s", device.address)
-        except:
-            _LOGGER.debug("Disconnect")
+        except BleakError as be:
+            _LOGGER.error("BLE error fetching data from ble device. Disconnecting...", be)
+        except Exception as e:
+            _LOGGER.error("Unknown error fetching data from ble device. Disconnecting...", e)
 
         await client.disconnect()
 
