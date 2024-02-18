@@ -11,9 +11,6 @@ The PoC script is [here](https://gist.github.com/taylorfinnell/87c79939a63ec2cb6
 ## Whats Missing
 
 - Flow sensors
-- I think it struggles to connect in time in some cases
-- The config_flow is a little broken, but it works
-- I don't know what happens if you have multiple shower heads
 - Technically the whole Hai app can be replaced with home assistant. You can write the LED configurations, water thresholds, etc
   
 ## Additional Info
@@ -25,7 +22,8 @@ You will see the Average and Current Temperature of the water, the current and t
 
 The device is disconnecting by design, so the value of the sensors will be valid during a running shower, after the entities will become unavailable. You should persist the value of the sensors using input_numbers and automation to set the values (excluding unavailable states).
 
-I only tested the integration with Spa model and only having one at home (do not know what happens if you have more than 1).
+I tested the integration with multiple shower heads and it seems to work fine. You must make sure you pair once with the official app to get the latest firmware. The firmware shipped with the device
+has different BLE characteristics that this integration does not support.
 
 The integration is very experimental so use it in a test environment and only when you feel confident move it to your prod environment.
 
