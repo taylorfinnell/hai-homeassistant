@@ -1,0 +1,100 @@
+"""Tests for the Hai shower activity binary sensor."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock
+
+from bleak.exc import BleakError
+from homeassistant.const import STATE_OFF, STATE_ON
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.hai.const import DOMAIN
+from custom_components.hai.coordinator import HaiCoordinator
+
+from .bluetooth import inject_hai_advertisement, make_service_info
+from .conftest import ADDRESS, DEVICE_NAME
+
+pytestmark = pytest.mark.usefixtures("enable_bluetooth")
+
+
+async def setup_entry(hass: HomeAssistant) -> MockConfigEntry:
+    """Set up the standard Hai config entry."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=ADDRESS,
+        title=DEVICE_NAME,
+        version=1,
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
+def shower_active_id(hass: HomeAssistant) -> str:
+    """Look up the shower_active entity ID."""
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "binary_sensor", DOMAIN, f"{ADDRESS}-shower_active"
+    )
+    assert entity_id is not None
+    return entity_id
+
+
+async def test_advertisement_turns_shower_on_even_if_poll_fails(
+    hass: HomeAssistant, mock_poll: AsyncMock
+) -> None:
+    """Activity tracks advertising presence, not poll success."""
+    mock_poll.side_effect = BleakError("no GATT for you")
+    await setup_entry(hass)
+
+    inject_hai_advertisement(hass, ADDRESS, advertisement_time=1000.0)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    state = hass.states.get(shower_active_id(hass))
+    assert state.state == STATE_ON
+    assert state.attributes["device_class"] == "running"
+
+
+async def test_advertisement_timeout_turns_shower_off_not_unavailable(
+    hass: HomeAssistant, mock_poll: AsyncMock
+) -> None:
+    """Losing advertisements means off, never unavailable."""
+    entry = await setup_entry(hass)
+    inject_hai_advertisement(hass, ADDRESS, advertisement_time=1000.0)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get(shower_active_id(hass)).state == STATE_ON
+
+    coordinator: HaiCoordinator = entry.runtime_data
+    coordinator._async_handle_unavailable(
+        make_service_info(ADDRESS, DEVICE_NAME, advertisement_time=1400.0)
+    )
+    await hass.async_block_till_done()
+
+    assert hass.states.get(shower_active_id(hass)).state == STATE_OFF
+
+    # The next shower flips it straight back on.
+    inject_hai_advertisement(hass, ADDRESS, advertisement_time=2000.0)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get(shower_active_id(hass)).state == STATE_ON
+
+
+async def test_restored_shower_active_starts_off(
+    hass: HomeAssistant, mock_poll: AsyncMock
+) -> None:
+    """After a reload while asleep, activity restores as off."""
+    entry = await setup_entry(hass)
+    inject_hai_advertisement(hass, ADDRESS, advertisement_time=1000.0)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get(shower_active_id(hass))
+    assert state is not None
+    assert state.state == STATE_OFF
