@@ -3,14 +3,17 @@
   "name": "hai",
   "bluetooth": [
     {
+      "connectable": false,
       "local_name": "haiS*"
     }
   ],
   "codeowners": ["@taylorfinnell"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],
-  "documentation": "",
+  "documentation": "https://github.com/taylorfinnell/hai-homeassistant",
+  "integration_type": "device",
   "iot_class": "local_polling",
-  "issue_tracker": "",
-  "version": "1.0"
+  "issue_tracker": "https://github.com/taylorfinnell/hai-homeassistant/issues",
+  "requirements": [],
+  "version": "2.0.0"
 }
