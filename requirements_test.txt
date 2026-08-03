@@ -1,0 +1,22 @@
+# Test environment for the Hai integration.
+#
+# pytest-homeassistant-custom-component pins homeassistant and the whole
+# pytest stack; this exact release maps to Home Assistant 2026.7.2. Bump the
+# two together deliberately.
+pytest-homeassistant-custom-component==0.13.346
+
+# Linter, pinned here rather than only in CI so a local run matches the gate.
+ruff==0.15.22
+
+# Runtime requirements of the bluetooth and usb components the integration
+# loads in tests (mirrors those integrations' manifest pins for HA 2026.7.2).
+aioesphomeapi==45.6.2
+aiousbwatcher==1.1.2
+bleak==3.0.2
+bleak-retry-connector==4.6.1
+bluetooth-adapters==2.4.0
+bluetooth-auto-recovery==1.6.4
+bluetooth-data-tools==1.29.18
+dbus-fast==5.0.22
+habluetooth==6.26.5
+serialx==1.8.2

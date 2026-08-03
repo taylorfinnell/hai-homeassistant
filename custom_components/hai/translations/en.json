@@ -1,20 +1,110 @@
 {
     "config": {
-        "abort": {
-            "not_supported": "This device is not supported by the hai integration.",
-            "no_devices_found": "No hai devices found. You may need to make sure your water is running."
-        },
-
+        "flow_title": "{name}",
         "step": {
             "bluetooth_confirm": {
-                "description": "Do you want to setup {name}?"
+                "description": "Do you want to set up {name}?"
             },
             "user": {
                 "data": {
                     "address": "Device"
                 },
-                "description": "Choose a device to setup"
+                "description": "Choose a Hai shower head to set up. The shower head only advertises while water is running."
             }
+        },
+        "abort": {
+            "already_configured": "This Hai shower head is already configured.",
+            "already_in_progress": "A configuration flow for this device is already in progress.",
+            "no_devices_found": "No Hai devices were found. The shower head only advertises while water is running, so run the shower and try again.",
+            "not_supported": "This device is not a supported Hai shower head."
+        }
+    },
+    "entity": {
+        "binary_sensor": {
+            "shower_active": {
+                "name": "Shower active"
+            }
+        },
+        "number": {
+            "first_level_threshold": {
+                "name": "First level threshold"
+            },
+            "second_level_threshold": {
+                "name": "Second level threshold"
+            },
+            "third_level_threshold": {
+                "name": "Third level threshold"
+            }
+        },
+        "sensor": {
+            "average_temperature": {
+                "name": "Current shower average temperature"
+            },
+            "battery_voltage": {
+                "name": "Battery voltage"
+            },
+            "current_duration": {
+                "name": "Current shower duration"
+            },
+            "current_temperature": {
+                "name": "Current shower temperature"
+            },
+            "current_volume": {
+                "name": "Current shower volume"
+            },
+            "first_level_color": {
+                "name": "First level colour"
+            },
+            "flow_rate": {
+                "name": "Flow rate"
+            },
+            "fourth_level_color": {
+                "name": "Fourth level colour"
+            },
+            "last_shower_duration": {
+                "name": "Last shower duration"
+            },
+            "last_shower_temperature": {
+                "name": "Last shower temperature"
+            },
+            "last_shower_volume": {
+                "name": "Last shower volume"
+            },
+            "lifetime_average_temperature": {
+                "name": "Lifetime average temperature"
+            },
+            "lifetime_volume": {
+                "name": "Lifetime volume"
+            },
+            "second_level_color": {
+                "name": "Second level colour"
+            },
+            "temperature_level_color": {
+                "name": "Temperature level colour"
+            },
+            "third_level_color": {
+                "name": "Third level colour"
+            }
+        }
+    },
+    "exceptions": {
+        "device_asleep": {
+            "message": "{name} is not reachable. The shower head only accepts Bluetooth connections while water is running, so start the shower and try again."
+        },
+        "setting_never_read": {
+            "message": "The current value of {setting} has not been read yet, so a new value cannot be verified. Run the shower until the setting appears, then try again."
+        },
+        "setting_not_writable": {
+            "message": "This shower head's firmware does not allow writing {setting}."
+        },
+        "threshold_out_of_range": {
+            "message": "{value} L is outside the accepted range of 0 to {maximum} L."
+        },
+        "write_failed": {
+            "message": "Could not write the setting to {name}: {error}"
+        },
+        "write_not_verified": {
+            "message": "{name} did not confirm the new value for {setting}, so it was not applied: {error}"
         }
     }
 }

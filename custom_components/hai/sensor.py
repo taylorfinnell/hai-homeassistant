@@ -1,11 +1,15 @@
-"""Support for Hai ble sensors."""
+"""Support for Hai sensors."""
+
 from __future__ import annotations
 
-import logging
+from typing import cast
 
-from .Hai import HaiDevice
-
-from homeassistant import config_entries
+from homeassistant.components.bluetooth.passive_update_processor import (
+    PassiveBluetoothDataProcessor,
+    PassiveBluetoothDataUpdate,
+    PassiveBluetoothEntityKey,
+    PassiveBluetoothProcessorEntity,
+)
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -13,181 +17,317 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import (
-    CONCENTRATION_PARTS_PER_BILLION,
-    CONCENTRATION_PARTS_PER_MILLION,
-    LIGHT_LUX,
-    PERCENTAGE,
-    UnitOfPressure,
+    EntityCategory,
+    UnitOfElectricPotential,
     UnitOfTemperature,
     UnitOfTime,
-    UnitOfElectricPotential,
-    CONDUCTIVITY,
-    VOLUME,
+    UnitOfVolume,
+    UnitOfVolumeFlowRate,
 )
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
-from homeassistant.helpers.entity import DeviceInfo, EntityCategory
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import StateType
-from homeassistant.helpers.update_coordinator import (
-    CoordinatorEntity,
-    DataUpdateCoordinator,
-)
-from homeassistant.util.unit_system import METRIC_SYSTEM
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import DOMAIN, WATER_VOLUME
+from .coordinator import HaiConfigEntry, HaiCoordinator, HaiUpdate
 
-_LOGGER = logging.getLogger(__name__)
+type HaiSensorValue = float | int | str | None
 
-SENSORS_MAPPING_TEMPLATE: dict[str, SensorEntityDescription] = {
-    "current_volume": SensorEntityDescription(
-        key="current_volume",
-        name="Current shower volume",
-        force_update=True,
-        native_unit_of_measurement=WATER_VOLUME,
-        state_class=SensorStateClass.MEASUREMENT,
-        device_class=SensorDeviceClass.VOLUME,
-        icon="mdi:shower-head",
-    ),
-    "total_volume": SensorEntityDescription(
-        key="total_volume",
-        name="Total shower volume",
-        native_unit_of_measurement=WATER_VOLUME,
-        force_update=True,
-        device_class=SensorDeviceClass.VOLUME,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:shower-head",
-    ),
+# Entities are pushed by the processor; polls are serialized by the
+# coordinator's debouncer and the protocol client's lock.
+PARALLEL_UPDATES = 0
+
+SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
     "current_temperature": SensorEntityDescription(
         key="current_temperature",
-        name="Current shower temperature",
-        force_update=True,
-        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="current_temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        icon="mdi:thermometer-water",
+        state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
     ),
     "average_temperature": SensorEntityDescription(
         key="average_temperature",
-        name="Current shower avg temperature",
-        force_update=True,
-        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="average_temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        icon="mdi:thermometer-water",
+        # No state class: an aggregate, not a point-in-time measurement.
         suggested_display_precision=1,
+    ),
+    "current_volume": SensorEntityDescription(
+        key="current_volume",
+        translation_key="current_volume",
+        device_class=SensorDeviceClass.VOLUME,
+        native_unit_of_measurement=UnitOfVolume.MILLILITERS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        icon="mdi:shower-head",
     ),
     "current_duration": SensorEntityDescription(
         key="current_duration",
-        name="Current shower duration",
-        force_update=True,
-        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="current_duration",
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
-        icon="mdi:timer-outline",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+    ),
+    "flow_rate": SensorEntityDescription(
+        key="flow_rate",
+        translation_key="flow_rate",
+        device_class=SensorDeviceClass.VOLUME_FLOW_RATE,
+        native_unit_of_measurement=UnitOfVolumeFlowRate.LITERS_PER_MINUTE,
+        state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
     ),
-    "last_shower_duration": SensorEntityDescription(
-        key="last_shower_duration",
-        name="Last shower Duration",
-        force_update=True,
-        state_class=SensorStateClass.MEASUREMENT,
-        device_class=SensorDeviceClass.DURATION,
-        native_unit_of_measurement=UnitOfTime.SECONDS,
-        icon="mdi:timer-outline",
+    "lifetime_volume": SensorEntityDescription(
+        key="lifetime_volume",
+        translation_key="lifetime_volume",
+        device_class=SensorDeviceClass.WATER,
+        native_unit_of_measurement=UnitOfVolume.LITERS,
+        # No state class until the counter's rollover/factory-reset behavior
+        # is hardware-verified; enabling statistics on a counter that resets
+        # would corrupt long-term data.
+        suggested_display_precision=1,
+    ),
+    "lifetime_average_temperature": SensorEntityDescription(
+        key="lifetime_average_temperature",
+        translation_key="lifetime_average_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         suggested_display_precision=1,
     ),
     "last_shower_temperature": SensorEntityDescription(
         key="last_shower_temperature",
-        name="Last shower temperature",
-        force_update=True,
-        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="last_shower_temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        icon="mdi:thermometer-water",
         suggested_display_precision=1,
+    ),
+    "last_shower_duration": SensorEntityDescription(
+        key="last_shower_duration",
+        translation_key="last_shower_duration",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
     ),
     "last_shower_volume": SensorEntityDescription(
         key="last_shower_volume",
-        name="Last shower volume",
-        force_update=True,
-        native_unit_of_measurement=WATER_VOLUME,
-        state_class=SensorStateClass.MEASUREMENT,
-        device_class=SensorDeviceClass.VOLUME,
+        translation_key="last_shower_volume",
+        native_unit_of_measurement=UnitOfVolume.MILLILITERS,
         icon="mdi:shower-head",
     ),
-    # TODO: Flow Rate
+    "battery_voltage": SensorEntityDescription(
+        key="battery_voltage",
+        translation_key="battery_voltage",
+        device_class=SensorDeviceClass.VOLTAGE,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        suggested_display_precision=2,
+    ),
+    **{
+        key: SensorEntityDescription(
+            key=key,
+            translation_key=key,
+            icon="mdi:palette",
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+        # Enabled by default, unlike battery_voltage: until the LED colours
+        # are writable these sensors are the only way to see what the device
+        # holds, and they are how the encryption question in protocol.py gets
+        # checked against the hai app.
+        for key in (
+            "first_level_color",
+            "second_level_color",
+            "third_level_color",
+            "fourth_level_color",
+            "temperature_level_color",
+        )
+    },
 }
+
+# Read-only #RRGGBB values from the configuration block. Not in
+# CORE_SENSOR_KEYS: they only appear once a settings read has confirmed the
+# firmware exposes them.
+COLOR_SENSOR_KEYS: tuple[str, ...] = (
+    "first_level_color",
+    "second_level_color",
+    "third_level_color",
+    "fourth_level_color",
+    "temperature_level_color",
+)
+
+# Live values are only meaningful during the wake generation they were read
+# in; everything else is retained from cache/restore. Derived from the entity
+# key (not stored on the description) so processor restore storage cannot
+# lose the policy.
+LIVE_SENSOR_KEYS: frozenset[str] = frozenset(
+    {
+        "current_temperature",
+        "average_temperature",
+        "current_volume",
+        "current_duration",
+        "flow_rate",
+    }
+)
+
+# Keys backed by required characteristics; published with every
+# advertisement so replayed discovery recreates entities before the first
+# successful poll. Optional keys join only after capability confirmation.
+CORE_SENSOR_KEYS: tuple[str, ...] = (
+    "current_temperature",
+    "average_temperature",
+    "current_volume",
+    "current_duration",
+    "lifetime_volume",
+    "last_shower_temperature",
+    "last_shower_duration",
+    "last_shower_volume",
+)
+
+_OPTIONAL_SENSOR_KEYS: tuple[str, ...] = (
+    "flow_rate",
+    "lifetime_average_temperature",
+    "battery_voltage",
+)
+
+
+def _entity_key(key: str) -> PassiveBluetoothEntityKey:
+    return PassiveBluetoothEntityKey(key=key, device_id=None)
+
+
+def sensor_update_to_bluetooth_data_update(
+    coordinator: HaiCoordinator, update: HaiUpdate
+) -> PassiveBluetoothDataUpdate[HaiSensorValue]:
+    """Convert a HaiUpdate into a processor update for the sensor platform.
+
+    Advertisements carry device metadata and the core descriptions but no
+    entity data, so cached values are never cleared by a wake signal. A
+    successful poll publishes every described live key with a fresh value or
+    an explicit None, plus retained values.
+    """
+    devices = {None: coordinator.device_info()}
+    descriptions = {
+        _entity_key(key): SENSOR_DESCRIPTIONS[key] for key in CORE_SENSOR_KEYS
+    }
+    data: dict[PassiveBluetoothEntityKey, HaiSensorValue] = {}
+
+    if (snapshot := update.snapshot) is not None:
+        data.update(
+            {
+                _entity_key("current_temperature"): snapshot.current_temperature_c,
+                _entity_key(
+                    "average_temperature"
+                ): snapshot.current_average_temperature_c,
+                _entity_key("current_volume"): snapshot.current_volume_ml,
+                _entity_key("current_duration"): snapshot.current_duration_s,
+                _entity_key("lifetime_volume"): round(
+                    snapshot.lifetime_volume_ml / 1000, 3
+                ),
+                _entity_key(
+                    "last_shower_temperature"
+                ): snapshot.last_shower.temperature_c,
+                _entity_key("last_shower_duration"): snapshot.last_shower.duration_s,
+                _entity_key("last_shower_volume"): snapshot.last_shower.volume_ml,
+            }
+        )
+        optional_values: dict[str, float | int | None] = {
+            "flow_rate": snapshot.current_flow_rate_lpm,
+            "lifetime_average_temperature": snapshot.lifetime_average_temperature_c,
+            "battery_voltage": snapshot.battery_voltage_v,
+        }
+        for key in _OPTIONAL_SENSOR_KEYS:
+            if key in snapshot.supported_optional_keys:
+                descriptions[_entity_key(key)] = SENSOR_DESCRIPTIONS[key]
+                data[_entity_key(key)] = optional_values[key]
+
+    # Settings are read once per wake generation. On every other poll they are
+    # omitted entirely rather than published as None, because the processor
+    # merges per key: omission retains the cached colour, None would blank it.
+    if (settings := update.settings) is not None:
+        for key in COLOR_SENSOR_KEYS:
+            if key in settings.led_colors:
+                descriptions[_entity_key(key)] = SENSOR_DESCRIPTIONS[key]
+                data[_entity_key(key)] = settings.led_colors[key]
+
+    return PassiveBluetoothDataUpdate(
+        devices=devices,
+        entity_descriptions=descriptions,
+        entity_data=data,
+    )
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: config_entries.ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: HaiConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the Hai BLE sensors."""
-    is_metric = hass.config.units is METRIC_SYSTEM
-
-    coordinator: DataUpdateCoordinator[HaiDevice] = hass.data[DOMAIN][entry.entry_id]
-    sensors_mapping = SENSORS_MAPPING_TEMPLATE.copy()
-    entities = []
-    _LOGGER.debug("got sensors: %s", coordinator.data.sensors)
-    for sensor_type, sensor_value in coordinator.data.sensors.items():
-        if sensor_type not in sensors_mapping:
-            _LOGGER.debug(
-                "Unknown sensor type detected: %s, %s",
-                sensor_type,
-                sensor_value,
-            )
-            continue
-        entities.append(
-            HaiSensor(coordinator, coordinator.data, sensors_mapping[sensor_type])
+    """Set up the Hai sensors."""
+    coordinator = entry.runtime_data
+    processor: PassiveBluetoothDataProcessor[HaiSensorValue, HaiUpdate] = (
+        PassiveBluetoothDataProcessor(
+            lambda update: sensor_update_to_bluetooth_data_update(coordinator, update)
         )
+    )
+    entry.async_on_unload(
+        processor.async_add_entities_listener(HaiSensorEntity, async_add_entities)
+    )
+    entry.async_on_unload(
+        coordinator.async_register_processor(processor, SensorEntityDescription)
+    )
 
-    async_add_entities(entities)
 
-
-class HaiSensor(CoordinatorEntity[DataUpdateCoordinator[HaiDevice]], SensorEntity):
-    """Hai BLE sensors for the device."""
-
-    # _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_has_entity_name = True
-
-    def __init__(
-        self,
-        coordinator: DataUpdateCoordinator,
-        hai_device: HaiDevice,
-        entity_description: SensorEntityDescription,
-    ) -> None:
-        """Populate the Hai entity with relevant data."""
-        super().__init__(coordinator)
-        self.entity_description = entity_description
-
-        name = f"{hai_device.name} {hai_device.identifier}"
-
-        self._attr_unique_id = f"{name}_{entity_description.key}"
-
-        self._id = hai_device.address
-        self._attr_device_info = DeviceInfo(
-            connections={
-                (
-                    CONNECTION_BLUETOOTH,
-                    hai_device.address,
-                )
-            },
-            name=name,
-            manufacturer="Hai",
-            model="Shower Head Spa",
-            hw_version=hai_device.hw_version,
-            sw_version=hai_device.sw_version,
-        )
-        _LOGGER.debug("Created Sensor: %s", entity_description.key)
+class HaiSensorEntity(
+    PassiveBluetoothProcessorEntity[
+        PassiveBluetoothDataProcessor[HaiSensorValue, HaiUpdate]
+    ],
+    SensorEntity,
+):
+    """A Hai sensor with a live or retained availability policy."""
 
     @property
-    def native_value(self) -> StateType:
-        """Return the value reported by the sensor."""
-        try:
-            return self.coordinator.data.sensors[self.entity_description.key]
-        except KeyError:
-            return None
+    def _coordinator(self) -> HaiCoordinator:
+        return cast(HaiCoordinator, self.processor.coordinator)
+
+    @property
+    def _is_live(self) -> bool:
+        return self.entity_key.key in LIVE_SENSOR_KEYS
+
+    @property
+    def native_value(self) -> HaiSensorValue:
+        """Return the latest cached value for this key."""
+        return self.processor.entity_data.get(self.entity_key)
+
+    @property
+    def available(self) -> bool:
+        """Apply the live or retained availability policy.
+
+        Live values require current Bluetooth presence, a successful poll for
+        the current wake generation, and a non-None value. Retained values
+        stay available from cache/restore even while the device sleeps.
+        """
+        if self._is_live:
+            return (
+                super().available
+                and self._coordinator.tracker.live_data_fresh
+                and self.native_value is not None
+            )
+        return self.native_value is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe live entities beyond the per-key processor dispatch.
+
+        Per-key dispatch only fires when this key's value changes, but live
+        availability also changes on new wake generations (advertisement
+        updates carry no entity data) and on failed polls (which dispatch
+        nothing at all). The unfiltered processor listener covers the former,
+        the freshness tracker the latter.
+        """
+        await super().async_added_to_hass()
+        if self._is_live:
+            self.async_on_remove(
+                self.processor.async_add_listener(self._handle_processor_update)
+            )
+            self.async_on_remove(
+                self._coordinator.tracker.add_listener(self._handle_tracker_reset)
+            )
+
+    @callback
+    def _handle_tracker_reset(self) -> None:
+        self.async_write_ha_state()
