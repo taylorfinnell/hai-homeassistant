@@ -6,26 +6,26 @@ validation, and unit conversion into one typed snapshot. It is intentionally
 free of Home Assistant imports so protocol fixtures can run without Home
 Assistant.
 
-Encryption of the configuration characteristics (the ``e62215xx`` block) is
-UNVERIFIED. The published protocol notes claim they are plaintext; the observed
-samples say otherwise:
+Encryption, confirmed on firmware 6.11 against the composite ``e622150d``
+record, which mirrors the individual characteristics and so decides them:
 
-* the composite ``e622150d`` blob XOR-decodes to eight leading zero bytes,
-  which is a 2**-64 coincidence if it were really plaintext;
-* that blob's temperature-colour field XOR-decodes to ``00 ff 00`` (pure
-  green), exactly matching ``e6221509`` XOR-decoded;
-* ``e6221503`` XOR-decodes to 75,708 mL (plausible) versus 67,249,597 mL
-  (implausible) read as plaintext.
+* the configuration block (``e62215xx``) IS XOR-encrypted, contrary to the
+  published protocol notes. ``e6221502`` reads ``00 02 03 04``, which decrypts
+  to exactly 1, and the composite record independently reports 1. ``e6221503``
+  decrypts to 75,708 and the record agrees; ``e6221508`` and ``e6221509``
+  decrypt to ``#FF2000`` and ``#00FF00`` and the record agrees. Read as
+  plaintext those same bytes give 67,305,984 and 67,249,597 -- garbage.
+* ``e6221401`` (session ID) is encrypted too, despite reading like a plain
+  integer. It decrypts to 1039 + 1 during a shower whose predecessor, decoded
+  from the known-encrypted last-shower record, is session 1039.
+* zero is a special case: the firmware returns an unencrypted zero buffer for
+  values that are unset or zero, not the encrypted form. See ``_plaintext``.
 
-Only ``e6221501``/``e6221502`` argue for plaintext, and those samples are
-almost certainly placeholders rather than captures. This module therefore ships
-``encrypted=True`` for the whole block.
-
-Read-back verification CANNOT settle this. XOR is symmetric, so writing a value
-to a device that decrypts on write and encrypts on read stores the wrong bytes
-and still reads back exactly what was written. Only comparing against the hai
-app resolves it -- see the diagnostics ``settings`` block, which carries the
-raw wire bytes for that purpose.
+Note that read-back verification cannot police any of this. XOR is symmetric,
+so writing to a device that decrypts on write and encrypts on read stores the
+wrong bytes and still reads back exactly what was written. The diagnostics
+``settings`` block therefore carries the raw wire bytes and both candidate
+decodings, which is how the above was established.
 """
 
 from __future__ import annotations
@@ -50,10 +50,9 @@ XOR_KEY = bytes((1, 2, 3, 4, 5, 6))
 
 _CONNECT_MAX_ATTEMPTS = 2
 
-# Raw device units per millilitre for the threshold characteristics. The vendor
-# notes label them "mL"; see the module docstring for why that is unconfirmed.
-# Correcting the scale after hardware testing changes this constant alone,
-# because raw device units are what gets stored.
+# Raw device units per millilitre for the threshold characteristics. Confirmed
+# on firmware 6.11: the third threshold decodes to 75,708, and that device's
+# level-4 colour is red, which fits a ~75.7 L (20 gal) "too much water" band.
 THRESHOLD_UNITS_PER_ML = 1
 
 # A decoded threshold above this is not a shower volume, it is a decoding
@@ -93,7 +92,7 @@ class CharacteristicSpec:
     required: bool
 
 
-SESSION_ID = CharacteristicSpec("session_id", _uuid("1401"), "<I", False, True)
+SESSION_ID = CharacteristicSpec("session_id", _uuid("1401"), "<I", True, True)
 CURRENT_TEMPERATURE = CharacteristicSpec(
     "current_temperature", _uuid("1402"), "<H", False, True
 )
@@ -404,7 +403,7 @@ class HaiProtocolClient:
             )
             await client.write_gatt_char(characteristic, wire, response=True)
             raw = bytes(await client.read_gatt_char(characteristic))
-            stored = xor_transform(raw) if spec.encrypted else raw
+            stored = self._plaintext(spec, raw)
             if stored != payload:
                 raise HaiWriteVerificationError(
                     f"{spec.key}: wrote {payload.hex()},"
@@ -479,8 +478,8 @@ class HaiProtocolClient:
         ) is not None:
             battery_voltage_v = battery_values[0] / 1000.0
 
-        last_shower_raw = await client.read_gatt_char(LAST_SHOWER.uuid)
-        last_shower = decode_last_shower(xor_transform(bytes(last_shower_raw)))
+        last_shower_raw = bytes(await client.read_gatt_char(LAST_SHOWER.uuid))
+        last_shower = decode_last_shower(self._plaintext(LAST_SHOWER, last_shower_raw))
 
         # Settings are read last and never fail the poll: configuration is not
         # worth discarding a snapshot whose live values already succeeded.
@@ -605,10 +604,26 @@ class HaiProtocolClient:
     ) -> bytes:
         return bytes(await client.read_gatt_char(spec.uuid))
 
+    @staticmethod
+    def _plaintext(spec: CharacteristicSpec, raw: bytes) -> bytes:
+        """Decrypt a payload, treating an all-zero read as a literal zero.
+
+        The firmware returns an unencrypted zero buffer for values that are
+        unset or zero, rather than the encrypted form (which would be the key
+        itself). Confirmed against the composite e622150d record on firmware
+        6.11: it reports 0 for first_level_threshold and #000000 for the first
+        three colours, exactly where the individual characteristics return
+        literal zeros. Without this, an idle shower head would report session
+        67,305,985 instead of 0 and look permanently mid-shower.
+        """
+        if not spec.encrypted or not any(raw):
+            return raw
+        return xor_transform(raw)
+
     def _decode_values(
         self, spec: CharacteristicSpec, raw: bytes
     ) -> tuple[int, ...]:
-        payload = xor_transform(raw) if spec.encrypted else raw
+        payload = self._plaintext(spec, raw)
         expected = struct.calcsize(spec.fmt)
         if len(payload) != expected:
             raise HaiProtocolError(

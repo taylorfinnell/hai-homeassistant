@@ -12,7 +12,9 @@ from homeassistant.core import HomeAssistant
 from .coordinator import HaiConfigEntry
 from .protocol import THRESHOLD_SPECS, HaiSettings, format_color, xor_transform
 
-TO_REDACT = {"address"}
+# "name" is redacted because it falls back to the Bluetooth address whenever
+# the connectable BLEDevice has no advertised name, which is common.
+TO_REDACT = {"address", "name"}
 
 
 def _json_safe(items: list[tuple[str, Any]]) -> dict[str, Any]:
