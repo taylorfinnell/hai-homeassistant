@@ -45,6 +45,26 @@ async def test_diagnostics_redacts_the_address(
     assert ADDRESS not in str(data)
 
 
+async def test_diagnostics_redact_the_address_hiding_in_the_name(
+    hass: HomeAssistant, mock_poll: AsyncMock
+) -> None:
+    """snapshot.name falls back to the address when the device has no name.
+
+    Real hardware hits this: the connectable BLEDevice frequently has no
+    advertised name, so the address ends up in a field that redacting only
+    "address" would leave exposed.
+    """
+    mock_poll.return_value = make_snapshot(name=ADDRESS)
+    entry = await setup_entry(hass)
+    inject_hai_advertisement(hass, ADDRESS, advertisement_time=1000.0)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    data = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert data["snapshot"]["name"] == REDACTED
+    assert ADDRESS not in str(data)
+
+
 async def test_diagnostics_serialize_datetimes_and_frozensets(
     hass: HomeAssistant, mock_poll: AsyncMock
 ) -> None:

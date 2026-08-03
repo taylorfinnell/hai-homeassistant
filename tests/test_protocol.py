@@ -55,15 +55,18 @@ ADDRESS = "AA:BB:CC:DD:EE:FF"
 LAST_SHOWER_ENCRYPTED = bytes.fromhex("1f020304600af5006f9b0406a5cdc561c20d")
 LAST_SHOWER_PLAIN = bytes.fromhex("1e000000650cf4026c9f0100a4cfc665c70b")
 
-# Wire bytes observed on real hardware. Under the shipped encrypted=True
-# hypothesis the third threshold decodes to 75,708 and the temperature colour
-# to pure green; read as plaintext they are 67,249,597 and a near-green that
-# is one XOR key away from it. See the protocol module docstring.
+# Wire bytes captured from a real shower head on firmware 6.11, mid-shower.
+# The composite record is what decides the encoding: it mirrors the individual
+# characteristics, so wherever the two agree the decoding is proven.
+OBSERVED_SESSION_ID = bytes.fromhex("11060304")
+OBSERVED_FIRST_THRESHOLD = bytes.fromhex("00000000")
+OBSERVED_SECOND_THRESHOLD = bytes.fromhex("00020304")
 OBSERVED_THIRD_THRESHOLD = bytes.fromhex("bd250204")
-OBSERVED_TEMPERATURE_COLOR = bytes.fromhex("01fd03")
+OBSERVED_UNSET_COLOR = bytes.fromhex("000000")
 OBSERVED_FOURTH_COLOR = bytes.fromhex("fe2203")
+OBSERVED_TEMPERATURE_COLOR = bytes.fromhex("01fd03")
 OBSERVED_LEVEL_CONFIGURATION = bytes.fromhex(
-    "01020304050601024c410406970e0f04050601020304050601fd038005a4"
+    "0102030404060102bf230406970e0c040506010203040506fe220304fa06"
 )
 
 # Reads issued by one mid-shower poll of a fully featured device.
@@ -74,6 +77,12 @@ SETTINGS_READ_COUNT = len(SETTINGS_CHARACTERISTICS)
 def _encode(spec: protocol.CharacteristicSpec, *values: int) -> bytes:
     payload = struct.pack(spec.fmt, *values)
     return xor_transform(payload) if spec.encrypted else payload
+
+
+def _decode_one(spec: protocol.CharacteristicSpec, raw: bytes) -> int:
+    """Decode a single-value characteristic exactly as the client would."""
+    (value,) = struct.unpack(spec.fmt, HaiProtocolClient._plaintext(spec, raw))
+    return value
 
 
 def default_payloads() -> dict[str, bytes]:
@@ -270,27 +279,57 @@ def test_format_color() -> None:
     assert format_color((1, 253, 3)) == "#01FD03"
 
 
-def test_observed_samples_decode_under_the_shipped_hypothesis() -> None:
-    """Pin what the real hardware bytes mean with encrypted=True.
+def test_composite_record_confirms_the_configuration_encoding() -> None:
+    """The e622150d record and the individual characteristics must agree.
 
-    These are the values the encryption question turns on: read as plaintext
-    the threshold is 67,249,597 mL (~67,000 L) and the temperature colour is a
-    near-green, both of which are exactly one XOR key away from a sane value.
+    This is the evidence the whole encoding rests on. The composite record is
+    read independently of the individual characteristics, so where the two
+    agree after decryption, the decoding is proven rather than assumed. Read
+    as plaintext the same bytes give 67,305,984 and 67,249,597 -- garbage.
     """
-    (threshold,) = struct.unpack(
-        THIRD_LEVEL_THRESHOLD.fmt, xor_transform(OBSERVED_THIRD_THRESHOLD)
-    )
-    assert threshold == 75708
+    record = xor_transform(OBSERVED_LEVEL_CONFIGURATION)
+    thresholds = struct.unpack("<iii", record[0:12])
+    assert thresholds == (0, 1, 75708)
+    assert format_color(tuple(record[24:27])) == "#FF2000"
+    assert format_color(tuple(record[27:30])) == "#00FF00"
+
+    # Each individual characteristic decrypts to what the record reports.
+    assert _decode_one(SECOND_LEVEL_THRESHOLD, OBSERVED_SECOND_THRESHOLD) == 1
+    assert _decode_one(THIRD_LEVEL_THRESHOLD, OBSERVED_THIRD_THRESHOLD) == 75708
+    assert format_color(xor_transform(OBSERVED_FOURTH_COLOR)) == "#FF2000"
+    assert format_color(xor_transform(OBSERVED_TEMPERATURE_COLOR)) == "#00FF00"
+
+    # And plaintext readings of those same bytes are nonsense.
+    assert int.from_bytes(OBSERVED_SECOND_THRESHOLD, "little", signed=True) == 67305984
     assert int.from_bytes(OBSERVED_THIRD_THRESHOLD, "little", signed=True) == 67249597
 
-    assert format_color(tuple(xor_transform(OBSERVED_TEMPERATURE_COLOR))) == "#00FF00"
-    assert format_color(tuple(OBSERVED_TEMPERATURE_COLOR)) == "#01FD03"
 
-    # The composite blob XOR-decodes to eight leading zero bytes, and its
-    # offset-24 field to the same pure green as e6221509.
-    decoded = xor_transform(OBSERVED_LEVEL_CONFIGURATION)
-    assert decoded[:8] == bytes(8)
-    assert format_color(tuple(decoded[24:27])) == "#00FF00"
+def test_zero_valued_characteristics_are_not_encrypted() -> None:
+    """Unset values come back as literal zeros, not as the encrypted form.
+
+    The record reports 0 for the first threshold and #000000 for the first
+    three colours, exactly where the individual characteristics return all
+    zeros. Decrypting those would give 67,305,985 and #010203.
+    """
+    record = xor_transform(OBSERVED_LEVEL_CONFIGURATION)
+    assert struct.unpack("<i", record[0:4])[0] == 0
+    assert format_color(tuple(record[15:18])) == "#000000"
+
+    assert _decode_one(FIRST_LEVEL_THRESHOLD, OBSERVED_FIRST_THRESHOLD) == 0
+    assert format_color(
+        HaiProtocolClient._plaintext(FIRST_LEVEL_COLOR, OBSERVED_UNSET_COLOR)
+    ) == "#000000"
+
+
+def test_session_id_is_encrypted() -> None:
+    """Session ID reads like a plain integer but is not one.
+
+    The captured shower decrypts to 1040, one past the last completed shower
+    (1039, decoded from the known-encrypted last-shower record). Undecrypted
+    it reads 67,307,025.
+    """
+    assert _decode_one(SESSION_ID, OBSERVED_SESSION_ID) == 1040
+    assert int.from_bytes(OBSERVED_SESSION_ID, "little") == 67307025
 
 
 async def test_signed_threshold_decodes_negative() -> None:
@@ -474,6 +513,26 @@ async def test_session_zero_skips_current_reads() -> None:
     assert "flow_rate" in snapshot.supported_optional_keys
 
 
+async def test_literal_zero_session_is_detected_as_idle() -> None:
+    """An idle head sends unencrypted zeros, and that must still read as 0.
+
+    Regression test for the pairing of two facts: session ID is encrypted, and
+    the firmware does not encrypt zero. Handling only the first would decrypt
+    an idle head's zeros to 67,305,985 and leave it looking permanently
+    mid-shower, publishing stale live values forever.
+    """
+    payloads = default_payloads()
+    payloads[SESSION_ID.uuid] = bytes(4)
+    client = FakeBleakClient(payloads)
+    snapshot = await poll_with(client)
+
+    assert snapshot.session_id == 0
+    assert snapshot.current_temperature_c is None
+    assert snapshot.current_volume_ml is None
+    for spec in (CURRENT_TEMPERATURE, CURRENT_VOLUME, CURRENT_DURATION, FLOW_RATE):
+        assert spec.uuid not in client.read_uuids
+
+
 async def test_missing_optional_characteristics_are_omitted() -> None:
     """A firmware without optional characteristics still polls cleanly."""
     payloads = default_payloads()
@@ -578,6 +637,17 @@ async def test_write_threshold_verifies_read_back() -> None:
     # The read-back happens after the write, on the same connection.
     assert client.read_uuids == [FIRST_LEVEL_THRESHOLD.uuid]
     assert client.disconnect_calls == 1
+
+
+async def test_write_zero_verifies_against_literal_zero_readback() -> None:
+    """Writing 0 is confirmed even though the device echoes plain zeros.
+
+    Without the zero special case the read-back would decrypt to 01020304 and
+    a perfectly good write would be reported as unverified.
+    """
+    client = FakeBleakClient(default_payloads(), stored_override=bytes(4))
+    assert await write_with(client, FIRST_LEVEL_THRESHOLD, 0) == 0
+    assert client.writes[0][1] == xor_transform(bytes(4))
 
 
 async def test_write_threshold_mismatch_raises() -> None:

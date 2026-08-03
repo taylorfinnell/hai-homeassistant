@@ -119,28 +119,28 @@ are read once per shower rather than on every poll, so they cost nothing during
 normal operation.
 
 The colours are exposed read-only. The three thresholds are writable `number`
-entities but **ship disabled**, because how the device encodes this block is not
-yet confirmed. The published protocol notes say these characteristics are
-unencrypted; the observed bytes say they are XOR-encrypted like the telemetry,
-and this integration follows the bytes. Verify before enabling:
+entities, but they **ship disabled** because writing has not been exercised on
+hardware yet. Enable them in the entity settings when you want to try it.
 
-1. Download diagnostics from the device page and find the `settings` block. Each
-   characteristic is listed with its raw bytes and both candidate decodings.
-2. Compare `led_colors` and `thresholds_raw` against what the hai app shows.
-3. If they match, enable the threshold entities in the entity settings.
-
-This check cannot be skipped or automated: writes are confirmed by reading the
-value back, and because the XOR transform is symmetric, a read-back succeeds
-even when the encoding is wrong. Only the app can tell you what the device
-actually holds. A threshold that decodes to an impossible volume shows as
-unavailable, which also blocks writing to it.
+Contrary to the published protocol notes, this block is XOR-encrypted the same
+way the telemetry is. That was settled against firmware 6.11 using the
+composite `e622150d` record, which mirrors the individual characteristics and
+so decides them: `e6221502` reads `00 02 03 04`, decrypts to 1, and the record
+independently reports 1. Zero is a special case — the firmware returns plain
+zeros for unset values rather than the encrypted form.
 
 Writes need a live Bluetooth connection, so they only work while water is
 running. Setting a threshold while the shower head is asleep fails immediately
 rather than queueing — a threshold that silently applied hours later would be
-worse than a clear error. Nothing in this integration can erase your shower
-history or factory-reset the device; those characteristics are deliberately not
-implemented.
+worse than a clear error. A threshold that decodes to an impossible volume
+shows as unavailable, which also blocks writing to it.
+
+Nothing in this integration can erase your shower history or factory-reset the
+device; those characteristics are deliberately not implemented.
+
+If you want to check what your own firmware reports, download diagnostics from
+the device page: the `settings` block lists every configuration characteristic
+with its raw bytes and both candidate decodings.
 
 ## Troubleshooting
 
