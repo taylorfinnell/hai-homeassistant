@@ -52,6 +52,22 @@ firmware actually exposes them.
    `<config>/custom_components/hai/`.
 2. Restart Home Assistant.
 
+### Upgrading from v1
+
+There is no automatic upgrade path. v2 is a rewrite: entity unique IDs, units,
+and stored state all changed, and no migration is provided. Remove the old
+integration and add it again.
+
+1. In **Settings → Devices & services**, open the existing **hai** entry and
+   delete it. This removes its device and all of its entities.
+2. Install v2 using one of the methods above and restart Home Assistant.
+3. Run the shower so the head advertises, then add the integration again (see
+   **First discovery** below).
+
+Recorded history for the v1 entities is not carried over, and any automations,
+scripts, or dashboard cards that referenced them need repointing at the new
+entities. Export anything you want to keep before deleting the integration.
+
 ### First discovery
 
 Run the shower for a little while. The shower head only advertises with
@@ -76,6 +92,8 @@ is running.
 | Last shower volume | mL | Retained | |
 | Battery voltage | V | Retained | Diagnostic, disabled by default |
 | Shower active | on/off | Activity | See below |
+| Level 1–4 colour, temperature colour | `#RRGGBB` | Retained | Diagnostic, read-only |
+| First/second/third level threshold | L | Config | Writable, **disabled by default** — see below |
 
 **Live** entities have values only while a shower is running *and* the
 integration has completed a fresh read for that shower. Between showers they
@@ -94,6 +112,36 @@ The Water dashboard needs a water sensor with long-term statistics; the
 lifetime volume entity will opt in once its rollover/factory-reset behavior
 has been confirmed on hardware.
 
+### Device settings (experimental)
+
+The shower head stores three consumption thresholds and five LED colours. They
+are read once per shower rather than on every poll, so they cost nothing during
+normal operation.
+
+The colours are exposed read-only. The three thresholds are writable `number`
+entities but **ship disabled**, because how the device encodes this block is not
+yet confirmed. The published protocol notes say these characteristics are
+unencrypted; the observed bytes say they are XOR-encrypted like the telemetry,
+and this integration follows the bytes. Verify before enabling:
+
+1. Download diagnostics from the device page and find the `settings` block. Each
+   characteristic is listed with its raw bytes and both candidate decodings.
+2. Compare `led_colors` and `thresholds_raw` against what the hai app shows.
+3. If they match, enable the threshold entities in the entity settings.
+
+This check cannot be skipped or automated: writes are confirmed by reading the
+value back, and because the XOR transform is symmetric, a read-back succeeds
+even when the encoding is wrong. Only the app can tell you what the device
+actually holds. A threshold that decodes to an impossible volume shows as
+unavailable, which also blocks writing to it.
+
+Writes need a live Bluetooth connection, so they only work while water is
+running. Setting a threshold while the shower head is asleep fails immediately
+rather than queueing — a threshold that silently applied hours later would be
+worse than a clear error. Nothing in this integration can erase your shower
+history or factory-reset the device; those characteristics are deliberately not
+implemented.
+
 ## Troubleshooting
 
 - **Everything unavailable and the device never appears:** the shower head
@@ -101,6 +149,12 @@ has been confirmed on hardware.
   **Settings → Devices & services**.
 - **"Missing required characteristics" in the log:** the shower head is on
   factory firmware. Pair it once with the official hai app to update.
+- **Upgraded from v1 and old entities linger or everything is unavailable:**
+  v2 does not migrate v1 config entries. Delete the old integration entry and
+  add it again — see **Upgrading from v1**.
+- **A threshold is unavailable:** its bytes decoded to a volume no shower could
+  use, which usually means the encoding assumption is wrong for your firmware.
+  Check the `settings` block in diagnostics.
 - Download diagnostics from the device page to see the last full snapshot,
   firmware versions (app and bootloader), and polling state.
 

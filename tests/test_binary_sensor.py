@@ -7,41 +7,19 @@ from unittest.mock import AsyncMock
 from bleak.exc import BleakError
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hai.const import DOMAIN
 from custom_components.hai.coordinator import HaiCoordinator
 
 from .bluetooth import inject_hai_advertisement, make_service_info
-from .conftest import ADDRESS, DEVICE_NAME
+from .conftest import ADDRESS, DEVICE_NAME, entity_id_for, setup_entry
 
 pytestmark = pytest.mark.usefixtures("enable_bluetooth")
 
 
-async def setup_entry(hass: HomeAssistant) -> MockConfigEntry:
-    """Set up the standard Hai config entry."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=ADDRESS,
-        title=DEVICE_NAME,
-        version=1,
-        minor_version=2,
-    )
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    return entry
-
-
 def shower_active_id(hass: HomeAssistant) -> str:
     """Look up the shower_active entity ID."""
-    entity_id = er.async_get(hass).async_get_entity_id(
-        "binary_sensor", DOMAIN, f"{ADDRESS}-shower_active"
-    )
-    assert entity_id is not None
-    return entity_id
+    return entity_id_for(hass, "binary_sensor", "shower_active")
 
 
 async def test_advertisement_turns_shower_on_even_if_poll_fails(

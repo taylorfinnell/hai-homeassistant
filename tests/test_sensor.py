@@ -21,17 +21,21 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 import pytest
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    async_fire_time_changed,
-)
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.hai.const import DOMAIN
 from custom_components.hai.coordinator import HaiCoordinator
 from custom_components.hai.sensor import SENSOR_DESCRIPTIONS
 
 from .bluetooth import inject_hai_advertisement, make_service_info
-from .conftest import ADDRESS, DEVICE_NAME, make_snapshot
+from .conftest import (
+    ADDRESS,
+    DEVICE_NAME,
+    entity_id_for as _entity_id_for,
+    make_settings,
+    make_snapshot,
+    setup_entry,
+)
 
 pytestmark = pytest.mark.usefixtures("enable_bluetooth")
 
@@ -45,28 +49,9 @@ RETAINED_KEYS = (
 )
 
 
-async def setup_entry(hass: HomeAssistant) -> MockConfigEntry:
-    """Set up the standard Hai config entry."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=ADDRESS,
-        title=DEVICE_NAME,
-        version=1,
-        minor_version=2,
-    )
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    return entry
-
-
 def entity_id_for(hass: HomeAssistant, key: str) -> str:
-    """Look up the entity ID for a processor key."""
-    entity_id = er.async_get(hass).async_get_entity_id(
-        "sensor", DOMAIN, f"{ADDRESS}-{key}"
-    )
-    assert entity_id is not None, f"no entity for key {key}"
-    return entity_id
+    """Look up the entity ID for a sensor processor key."""
+    return _entity_id_for(hass, "sensor", key)
 
 
 async def wake_and_poll(
@@ -410,6 +395,107 @@ async def test_clear_advertisement_history_after_every_poll(
 
         assert clear_history.call_count == 2
         clear_history.assert_called_with(hass, ADDRESS)
+
+
+async def test_color_sensors_created_from_settings(
+    hass: HomeAssistant, mock_poll: AsyncMock
+) -> None:
+    """A settings read publishes the LED colours as diagnostic sensors."""
+    await setup_entry(hass)
+    await wake_and_poll(hass, advertisement_time=1000.0)
+
+    assert hass.states.get(
+        entity_id_for(hass, "temperature_level_color")
+    ).state == "#00FF00"
+    assert hass.states.get(
+        entity_id_for(hass, "fourth_level_color")
+    ).state == "#FF2000"
+    assert hass.states.get(entity_id_for(hass, "first_level_color")).state == "#000000"
+
+    registry_entry = er.async_get(hass).async_get(
+        entity_id_for(hass, "fourth_level_color")
+    )
+    assert registry_entry.entity_category == "diagnostic"
+    assert registry_entry.disabled_by is None
+
+
+async def test_color_sensors_absent_without_settings(
+    hass: HomeAssistant, mock_poll: AsyncMock
+) -> None:
+    """Firmware without the configuration block gets no colour entities."""
+    mock_poll.return_value = make_snapshot(settings=None)
+    await setup_entry(hass)
+    await wake_and_poll(hass, advertisement_time=1000.0)
+
+    entity_registry = er.async_get(hass)
+    for key in ("first_level_color", "temperature_level_color"):
+        assert (
+            entity_registry.async_get_entity_id("sensor", DOMAIN, f"{ADDRESS}-{key}")
+            is None
+        ), key
+
+
+async def test_unsupported_colors_create_no_entities(
+    hass: HomeAssistant, mock_poll: AsyncMock
+) -> None:
+    """Only colours the firmware actually exposes become entities."""
+    mock_poll.return_value = make_snapshot(
+        settings=make_settings(
+            led_colors={"temperature_level_color": "#00FF00"},
+        )
+    )
+    await setup_entry(hass)
+    await wake_and_poll(hass, advertisement_time=1000.0)
+
+    entity_registry = er.async_get(hass)
+    assert entity_registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{ADDRESS}-temperature_level_color"
+    )
+    assert (
+        entity_registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{ADDRESS}-first_level_color"
+        )
+        is None
+    )
+
+
+async def test_colors_retained_when_later_polls_omit_settings(
+    hass: HomeAssistant, mock_poll: AsyncMock, freezer: FrozenDateTimeFactory
+) -> None:
+    """Omitting settings keeps the cached colour instead of blanking it.
+
+    This is the guarantee the once-per-wake-generation refresh depends on:
+    the processor merges per key, so a key absent from entity_data keeps its
+    previous value. Publishing None instead would clear the colour on every
+    poll after the first.
+    """
+    await setup_entry(hass)
+    await wake_and_poll(hass, advertisement_time=1000.0)
+    entity_id = entity_id_for(hass, "temperature_level_color")
+    assert hass.states.get(entity_id).state == "#00FF00"
+
+    mock_poll.return_value = make_snapshot(settings=None)
+    await next_debounced_poll(hass, freezer, advertisement_time=1020.0)
+
+    assert mock_poll.await_count == 2
+    assert hass.states.get(entity_id).state == "#00FF00"
+
+
+async def test_colors_stay_available_while_asleep(
+    hass: HomeAssistant, mock_poll: AsyncMock
+) -> None:
+    """Colours are retained values: they survive the device going away."""
+    entry = await setup_entry(hass)
+    await wake_and_poll(hass, advertisement_time=1000.0)
+    entity_id = entity_id_for(hass, "temperature_level_color")
+
+    coordinator: HaiCoordinator = entry.runtime_data
+    coordinator._async_handle_unavailable(
+        make_service_info(ADDRESS, DEVICE_NAME, advertisement_time=1400.0)
+    )
+    await hass.async_block_till_done()
+
+    assert hass.states.get(entity_id).state == "#00FF00"
 
 
 def test_description_storage_round_trip() -> None:

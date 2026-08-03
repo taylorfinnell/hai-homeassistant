@@ -6,10 +6,14 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util.async_ import get_scheduled_timer_handles
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hai.protocol import HaiLastShower, HaiSnapshot
+from custom_components.hai.const import DOMAIN
+from custom_components.hai.protocol import HaiLastShower, HaiSettings, HaiSnapshot
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 DEVICE_NAME = "haiS0123456"
@@ -22,6 +26,22 @@ ALL_OPTIONAL_KEYS = frozenset(
         "battery_voltage",
     }
 )
+
+THRESHOLD_KEYS = (
+    "first_level_threshold",
+    "second_level_threshold",
+    "third_level_threshold",
+)
+
+COLOR_KEYS = (
+    "first_level_color",
+    "second_level_color",
+    "third_level_color",
+    "fourth_level_color",
+    "temperature_level_color",
+)
+
+ALL_SETTINGS_KEYS = frozenset({*THRESHOLD_KEYS, *COLOR_KEYS, "level_configuration"})
 
 
 @pytest.fixture(autouse=True)
@@ -67,6 +87,33 @@ def make_last_shower(**overrides: object) -> HaiLastShower:
     return HaiLastShower(**values)
 
 
+def make_settings(**overrides: object) -> HaiSettings:
+    """Build a settings read with defaults; override any field.
+
+    Threshold values are raw device units, matching what the protocol layer
+    stores. The colour defaults are the observed hardware samples XOR-decoded.
+    """
+    values: dict = {
+        "thresholds_raw": {
+            "first_level_threshold": 20000,
+            "second_level_threshold": 40000,
+            "third_level_threshold": 75708,
+        },
+        "led_colors": {
+            "first_level_color": "#000000",
+            "second_level_color": "#000000",
+            "third_level_color": "#000000",
+            "fourth_level_color": "#FF2000",
+            "temperature_level_color": "#00FF00",
+        },
+        "raw_hex": {"third_level_threshold": "bd250204"},
+        "supported_keys": ALL_SETTINGS_KEYS,
+        "writable_keys": frozenset(THRESHOLD_KEYS),
+    }
+    values.update(overrides)
+    return HaiSettings(**values)
+
+
 def make_snapshot(**overrides: object) -> HaiSnapshot:
     """Build a full snapshot with defaults; override any field."""
     values: dict = {
@@ -87,6 +134,7 @@ def make_snapshot(**overrides: object) -> HaiSnapshot:
         "battery_voltage_v": 3.537,
         "last_shower": make_last_shower(),
         "supported_optional_keys": ALL_OPTIONAL_KEYS,
+        "settings": make_settings(),
     }
     values.update(overrides)
     return HaiSnapshot(**values)
@@ -105,6 +153,24 @@ def make_idle_snapshot(**overrides: object) -> HaiSnapshot:
     }
     values.update(overrides)
     return make_snapshot(**values)
+
+
+async def setup_entry(hass: HomeAssistant) -> MockConfigEntry:
+    """Set up the standard Hai config entry."""
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=ADDRESS, title=DEVICE_NAME)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
+def entity_id_for(hass: HomeAssistant, platform: str, key: str) -> str:
+    """Look up the entity ID for a processor key on a platform."""
+    entity_id = er.async_get(hass).async_get_entity_id(
+        platform, DOMAIN, f"{ADDRESS}-{key}"
+    )
+    assert entity_id is not None, f"no {platform} entity for key {key}"
+    return entity_id
 
 
 @pytest.fixture

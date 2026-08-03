@@ -27,7 +27,9 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .coordinator import HaiConfigEntry, HaiCoordinator, HaiUpdate, HaiUpdateSource
+from .coordinator import HaiConfigEntry, HaiCoordinator, HaiUpdate
+
+type HaiSensorValue = float | int | str | None
 
 # Entities are pushed by the processor; polls are serialized by the
 # coordinator's debouncer and the protocol client's lock.
@@ -119,7 +121,37 @@ SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
         entity_registry_enabled_default=False,
         suggested_display_precision=2,
     ),
+    **{
+        key: SensorEntityDescription(
+            key=key,
+            translation_key=key,
+            icon="mdi:palette",
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+        # Enabled by default, unlike battery_voltage: until the LED colours
+        # are writable these sensors are the only way to see what the device
+        # holds, and they are how the encryption question in protocol.py gets
+        # checked against the hai app.
+        for key in (
+            "first_level_color",
+            "second_level_color",
+            "third_level_color",
+            "fourth_level_color",
+            "temperature_level_color",
+        )
+    },
 }
+
+# Read-only #RRGGBB values from the configuration block. Not in
+# CORE_SENSOR_KEYS: they only appear once a settings read has confirmed the
+# firmware exposes them.
+COLOR_SENSOR_KEYS: tuple[str, ...] = (
+    "first_level_color",
+    "second_level_color",
+    "third_level_color",
+    "fourth_level_color",
+    "temperature_level_color",
+)
 
 # Live values are only meaningful during the wake generation they were read
 # in; everything else is retained from cache/restore. Derived from the entity
@@ -162,7 +194,7 @@ def _entity_key(key: str) -> PassiveBluetoothEntityKey:
 
 def sensor_update_to_bluetooth_data_update(
     coordinator: HaiCoordinator, update: HaiUpdate
-) -> PassiveBluetoothDataUpdate[float | int | None]:
+) -> PassiveBluetoothDataUpdate[HaiSensorValue]:
     """Convert a HaiUpdate into a processor update for the sensor platform.
 
     Advertisements carry device metadata and the core descriptions but no
@@ -174,34 +206,45 @@ def sensor_update_to_bluetooth_data_update(
     descriptions = {
         _entity_key(key): SENSOR_DESCRIPTIONS[key] for key in CORE_SENSOR_KEYS
     }
+    data: dict[PassiveBluetoothEntityKey, HaiSensorValue] = {}
 
-    if update.source is HaiUpdateSource.ADVERTISEMENT or update.snapshot is None:
-        return PassiveBluetoothDataUpdate(
-            devices=devices,
-            entity_descriptions=descriptions,
-            entity_data={},
+    if (snapshot := update.snapshot) is not None:
+        data.update(
+            {
+                _entity_key("current_temperature"): snapshot.current_temperature_c,
+                _entity_key(
+                    "average_temperature"
+                ): snapshot.current_average_temperature_c,
+                _entity_key("current_volume"): snapshot.current_volume_ml,
+                _entity_key("current_duration"): snapshot.current_duration_s,
+                _entity_key("lifetime_volume"): round(
+                    snapshot.lifetime_volume_ml / 1000, 3
+                ),
+                _entity_key(
+                    "last_shower_temperature"
+                ): snapshot.last_shower.temperature_c,
+                _entity_key("last_shower_duration"): snapshot.last_shower.duration_s,
+                _entity_key("last_shower_volume"): snapshot.last_shower.volume_ml,
+            }
         )
+        optional_values: dict[str, float | int | None] = {
+            "flow_rate": snapshot.current_flow_rate_lpm,
+            "lifetime_average_temperature": snapshot.lifetime_average_temperature_c,
+            "battery_voltage": snapshot.battery_voltage_v,
+        }
+        for key in _OPTIONAL_SENSOR_KEYS:
+            if key in snapshot.supported_optional_keys:
+                descriptions[_entity_key(key)] = SENSOR_DESCRIPTIONS[key]
+                data[_entity_key(key)] = optional_values[key]
 
-    snapshot = update.snapshot
-    data: dict[PassiveBluetoothEntityKey, float | int | None] = {
-        _entity_key("current_temperature"): snapshot.current_temperature_c,
-        _entity_key("average_temperature"): snapshot.current_average_temperature_c,
-        _entity_key("current_volume"): snapshot.current_volume_ml,
-        _entity_key("current_duration"): snapshot.current_duration_s,
-        _entity_key("lifetime_volume"): round(snapshot.lifetime_volume_ml / 1000, 3),
-        _entity_key("last_shower_temperature"): snapshot.last_shower.temperature_c,
-        _entity_key("last_shower_duration"): snapshot.last_shower.duration_s,
-        _entity_key("last_shower_volume"): snapshot.last_shower.volume_ml,
-    }
-    optional_values: dict[str, float | int | None] = {
-        "flow_rate": snapshot.current_flow_rate_lpm,
-        "lifetime_average_temperature": snapshot.lifetime_average_temperature_c,
-        "battery_voltage": snapshot.battery_voltage_v,
-    }
-    for key in _OPTIONAL_SENSOR_KEYS:
-        if key in snapshot.supported_optional_keys:
-            descriptions[_entity_key(key)] = SENSOR_DESCRIPTIONS[key]
-            data[_entity_key(key)] = optional_values[key]
+    # Settings are read once per wake generation. On every other poll they are
+    # omitted entirely rather than published as None, because the processor
+    # merges per key: omission retains the cached colour, None would blank it.
+    if (settings := update.settings) is not None:
+        for key in COLOR_SENSOR_KEYS:
+            if key in settings.led_colors:
+                descriptions[_entity_key(key)] = SENSOR_DESCRIPTIONS[key]
+                data[_entity_key(key)] = settings.led_colors[key]
 
     return PassiveBluetoothDataUpdate(
         devices=devices,
@@ -217,7 +260,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Hai sensors."""
     coordinator = entry.runtime_data
-    processor: PassiveBluetoothDataProcessor[float | int | None, HaiUpdate] = (
+    processor: PassiveBluetoothDataProcessor[HaiSensorValue, HaiUpdate] = (
         PassiveBluetoothDataProcessor(
             lambda update: sensor_update_to_bluetooth_data_update(coordinator, update)
         )
@@ -232,7 +275,7 @@ async def async_setup_entry(
 
 class HaiSensorEntity(
     PassiveBluetoothProcessorEntity[
-        PassiveBluetoothDataProcessor[float | int | None, HaiUpdate]
+        PassiveBluetoothDataProcessor[HaiSensorValue, HaiUpdate]
     ],
     SensorEntity,
 ):
@@ -247,7 +290,7 @@ class HaiSensorEntity(
         return self.entity_key.key in LIVE_SENSOR_KEYS
 
     @property
-    def native_value(self) -> float | int | None:
+    def native_value(self) -> HaiSensorValue:
         """Return the latest cached value for this key."""
         return self.processor.entity_data.get(self.entity_key)
 
