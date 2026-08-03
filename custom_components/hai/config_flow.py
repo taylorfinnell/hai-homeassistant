@@ -19,7 +19,6 @@ class HaiConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Hai."""
 
     VERSION = 1
-    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         """Initialize the config flow."""

@@ -35,7 +35,6 @@ async def test_bluetooth_discovery_flow(hass: HomeAssistant) -> None:
     entry = result["result"]
     assert entry.unique_id == ADDRESS
     assert entry.version == 1
-    assert entry.minor_version == 2
     await hass.async_block_till_done()
 
 
