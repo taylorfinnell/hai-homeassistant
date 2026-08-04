@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import re
 
-from custom_components.hai import binary_sensor, coordinator, number, sensor
+from custom_components.hai import binary_sensor, coordinator, number, sensor, text
 
 TRANSLATIONS = json.loads(
     (
@@ -24,7 +24,7 @@ TRANSLATIONS = json.loads(
 )
 
 # Modules that raise translated exceptions rather than naming entities.
-EXCEPTION_SOURCES = (coordinator, number)
+EXCEPTION_SOURCES = (coordinator, number, text)
 
 _TRANSLATION_KEY_PATTERN = re.compile(r'translation_key="([a-z0-9_]+)"')
 
@@ -48,6 +48,26 @@ def test_number_translation_keys_resolve() -> None:
     for key, description in number.NUMBER_DESCRIPTIONS.items():
         assert description.translation_key == key, key
         assert names[key]["name"], key
+
+
+def test_text_translation_keys_resolve() -> None:
+    """Every LED colour description names a real translation."""
+    names = entity_names("text")
+    for key, description in text.TEXT_DESCRIPTIONS.items():
+        assert description.translation_key == key, key
+        assert names[key]["name"], key
+
+
+def test_no_orphaned_entity_translations() -> None:
+    """Names for entities that no longer exist are dead weight."""
+    declared = {
+        "sensor": set(sensor.SENSOR_DESCRIPTIONS),
+        "number": set(number.NUMBER_DESCRIPTIONS),
+        "text": set(text.TEXT_DESCRIPTIONS),
+        "binary_sensor": {binary_sensor.SHOWER_ACTIVE_DESCRIPTION.translation_key},
+    }
+    for platform, keys in declared.items():
+        assert set(entity_names(platform)) == keys, platform
 
 
 def test_binary_sensor_translation_key_resolves() -> None:

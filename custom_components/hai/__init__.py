@@ -7,7 +7,12 @@ from homeassistant.core import HomeAssistant
 
 from .coordinator import HaiConfigEntry, HaiCoordinator
 
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.NUMBER, Platform.SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
+    Platform.NUMBER,
+    Platform.SENSOR,
+    Platform.TEXT,
+]
 
 # There is deliberately no async_migrate_entry: v2 is a rewrite with new unique
 # IDs and no upgrade path from v1, so a v1 entry is removed and re-added by hand.

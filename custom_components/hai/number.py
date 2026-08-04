@@ -1,10 +1,10 @@
 """Writable consumption thresholds for the Hai integration.
 
-These are the only writes this integration performs. Everything about them is
-deliberately conservative: the characteristics are capability-probed for
-writability, values are verified by read-back, implausible readings block the
-entity entirely, and the entities are disabled by default until the decoding
-has been checked against the hai app (see the protocol module docstring).
+Everything about these is deliberately conservative: the characteristics are
+capability-probed for writability, values are verified by read-back, a
+threshold that decodes to an impossible volume makes its entity unavailable
+and so cannot be written at all, and a value that has never been read is
+refused because an unobserved encoding cannot be verified.
 """
 
 from __future__ import annotations
@@ -64,10 +64,6 @@ NUMBER_DESCRIPTIONS: dict[str, NumberEntityDescription] = {
         native_step=1,
         mode=NumberMode.BOX,
         entity_category=EntityCategory.CONFIG,
-        # Enable only after confirming in diagnostics that the threshold
-        # decoding matches what the hai app shows. Read-back verification
-        # cannot catch a wrong encryption choice, because XOR is symmetric.
-        entity_registry_enabled_default=False,
     )
     for key in THRESHOLD_KEYS
 }
