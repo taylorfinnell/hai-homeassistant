@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 import logging
 
+from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import (
@@ -24,6 +25,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from .const import DOMAIN, MANUFACTURER, MODEL, WAKE_GENERATION_GAP_SECONDS
 from .freshness import HaiFreshnessTracker
 from .protocol import (
+    COLOR_SPECS,
     THRESHOLD_SPECS,
     HaiProtocolClient,
     HaiProtocolError,
@@ -203,15 +205,12 @@ class HaiCoordinator(ActiveBluetoothProcessorCoordinator[HaiUpdate]):
             settings=snapshot.settings,
         )
 
-    async def async_write_threshold(self, key: str, raw_value: int) -> HaiUpdate:
-        """Write one threshold now and return the update to publish.
+    def _connectable_device_or_raise(self) -> BLEDevice:
+        """Resolve a connectable path, or fail with a readable error.
 
-        Takes raw device units; the number entity owns the millilitre
-        conversion. The device must be awake and connectable. A write is never
-        queued for a later shower: a threshold silently applied hours later is
-        worse than a clear failure.
+        A write is never queued for a later shower: a setting silently applied
+        hours later is worse than a clear failure.
         """
-        spec = THRESHOLD_SPECS[key]
         ble_device = bluetooth.async_ble_device_from_address(
             self.hass, self.address, connectable=True
         )
@@ -221,13 +220,12 @@ class HaiCoordinator(ActiveBluetoothProcessorCoordinator[HaiUpdate]):
                 translation_key="device_asleep",
                 translation_placeholders={"name": self.entry.title},
             )
+        return ble_device
 
-        try:
-            stored = await self.client.async_write_threshold(
-                ble_device, spec, raw_value
-            )
-        except HaiWriteVerificationError as err:
-            raise HomeAssistantError(
+    def _translate_write_error(self, key: str, err: Exception) -> HomeAssistantError:
+        """Turn a protocol-layer write failure into a user-facing error."""
+        if isinstance(err, HaiWriteVerificationError):
+            return HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="write_not_verified",
                 translation_placeholders={
@@ -235,32 +233,25 @@ class HaiCoordinator(ActiveBluetoothProcessorCoordinator[HaiUpdate]):
                     "setting": key,
                     "error": str(err),
                 },
-            ) from err
-        except HaiUnsupportedError as err:
-            raise HomeAssistantError(
+            )
+        if isinstance(err, HaiUnsupportedError):
+            return HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="setting_not_writable",
                 translation_placeholders={"setting": key},
-            ) from err
-        except (HaiProtocolError, BleakError, TimeoutError, OSError) as err:
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="write_failed",
-                translation_placeholders={"name": self.entry.title, "error": str(err)},
-            ) from err
-
-        # A single-key update: the processor merges, so this is exactly right
-        # and works even when nothing has been read yet.
-        settings = HaiSettings(
-            thresholds_raw={key: stored},
-            supported_keys=frozenset({key}),
-            writable_keys=frozenset({key}),
+            )
+        return HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="write_failed",
+            translation_placeholders={"name": self.entry.title, "error": str(err)},
         )
+
+    def _after_write(self, settings: HaiSettings) -> HaiUpdate:
+        """Cache a verified write and build the update to publish."""
         self.last_settings = merge_settings(self.last_settings, settings)
         # Re-read the whole block on the next poll so device-side clamping of
         # the values we did not write is picked up.
         self._settings_generation = None
-        self._async_warn_if_unordered()
         return HaiUpdate(
             address=self.address,
             name=self.entry.title,
@@ -269,6 +260,49 @@ class HaiCoordinator(ActiveBluetoothProcessorCoordinator[HaiUpdate]):
             snapshot=None,
             settings=settings,
         )
+
+    async def async_write_color(self, key: str, value: str) -> HaiUpdate:
+        """Write one LED colour now and return the update to publish."""
+        ble_device = self._connectable_device_or_raise()
+        try:
+            stored = await self.client.async_write_color(
+                ble_device, COLOR_SPECS[key], value
+            )
+        except (HaiProtocolError, BleakError, TimeoutError, OSError) as err:
+            raise self._translate_write_error(key, err) from err
+
+        # A single-key update: the processor merges, so this is exactly right
+        # and works even when nothing has been read yet.
+        return self._after_write(
+            HaiSettings(
+                led_colors={key: stored},
+                supported_keys=frozenset({key}),
+                writable_keys=frozenset({key}),
+            )
+        )
+
+    async def async_write_threshold(self, key: str, raw_value: int) -> HaiUpdate:
+        """Write one threshold now and return the update to publish.
+
+        Takes raw device units; the number entity owns the millilitre
+        conversion.
+        """
+        ble_device = self._connectable_device_or_raise()
+        try:
+            stored = await self.client.async_write_threshold(
+                ble_device, THRESHOLD_SPECS[key], raw_value
+            )
+        except (HaiProtocolError, BleakError, TimeoutError, OSError) as err:
+            raise self._translate_write_error(key, err) from err
+
+        settings = HaiSettings(
+            thresholds_raw={key: stored},
+            supported_keys=frozenset({key}),
+            writable_keys=frozenset({key}),
+        )
+        update = self._after_write(settings)
+        self._async_warn_if_unordered()
+        return update
 
     @callback
     def _async_warn_if_unordered(self) -> None:

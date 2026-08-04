@@ -151,37 +151,11 @@ SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
         entity_registry_enabled_default=False,
         suggested_display_precision=2,
     ),
-    **{
-        key: SensorEntityDescription(
-            key=key,
-            translation_key=key,
-            icon="mdi:palette",
-            entity_category=EntityCategory.DIAGNOSTIC,
-        )
-        # Enabled by default, unlike battery_voltage: until the LED colours
-        # are writable these sensors are the only way to see what the device
-        # holds, and they are how the encryption question in protocol.py gets
-        # checked against the hai app.
-        for key in (
-            "first_level_color",
-            "second_level_color",
-            "third_level_color",
-            "fourth_level_color",
-            "temperature_level_color",
-        )
-    },
 }
 
-# Read-only #RRGGBB values from the configuration block. Not in
-# CORE_SENSOR_KEYS: they only appear once a settings read has confirmed the
-# firmware exposes them.
-COLOR_SENSOR_KEYS: tuple[str, ...] = (
-    "first_level_color",
-    "second_level_color",
-    "third_level_color",
-    "fourth_level_color",
-    "temperature_level_color",
-)
+# LED colours were briefly read-only sensors here. They are writable text
+# entities now (text.py), which show the same value and can set it, so
+# duplicating them as sensors would only add clutter.
 
 # Live values are only meaningful during the wake generation they were read
 # in; everything else is retained from cache/restore. Derived from the entity
@@ -291,15 +265,6 @@ def sensor_update_to_bluetooth_data_update(
             if key in snapshot.supported_optional_keys:
                 descriptions[_entity_key(key)] = SENSOR_DESCRIPTIONS[key]
                 data[_entity_key(key)] = optional_values[key]
-
-    # Settings are read once per wake generation. On every other poll they are
-    # omitted entirely rather than published as None, because the processor
-    # merges per key: omission retains the cached colour, None would blank it.
-    if (settings := update.settings) is not None:
-        for key in COLOR_SENSOR_KEYS:
-            if key in settings.led_colors:
-                descriptions[_entity_key(key)] = SENSOR_DESCRIPTIONS[key]
-                data[_entity_key(key)] = settings.led_colors[key]
 
     return PassiveBluetoothDataUpdate(
         devices=devices,

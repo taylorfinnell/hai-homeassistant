@@ -96,7 +96,7 @@ is running.
 | Last shower started | timestamp | Retained | |
 | Battery voltage | V | Retained | Diagnostic, disabled by default |
 | Shower active | on/off | Activity | See below |
-| Level 1–4 colour, temperature colour | `#RRGGBB` | Retained | Diagnostic, read-only |
+| Level 1–4 colour, temperature colour | `#RRGGBB` | Config | Writable — see below |
 | First/second/third level threshold | L | Config | Writable, **disabled by default** — see below |
 
 **Live** entities have values only while a shower is running *and* the
@@ -127,9 +127,20 @@ The shower head stores three consumption thresholds and five LED colours. They
 are read once per shower rather than on every poll, so they cost nothing during
 normal operation.
 
-The colours are exposed read-only. The three thresholds are writable `number`
-entities, but they **ship disabled** because writing has not been exercised on
-hardware yet. Enable them in the entity settings when you want to try it.
+The head lights one of four colours according to how much water the running
+shower has used, with a fifth for temperature. Each is a `text` entity holding
+a `#RRGGBB` value, so setting one is a matter of typing a hex colour.
+
+They are text entities rather than `light` entities on purpose. Home Assistant
+couples brightness to every RGB colour mode, so a light would carry a
+brightness slider that either does nothing or quietly rescales the stored
+colour — and five entities in the light domain would be swept up by any
+"turn off all the lights" automation, which here would write `#000000` over
+your configuration.
+
+The three thresholds are writable `number` entities, but they **ship disabled**
+because writing has not been exercised on hardware yet. Enable them in the
+entity settings when you want to try it.
 
 Contrary to the published protocol notes, this block is XOR-encrypted the same
 way the telemetry is. That was settled against firmware 6.11 using the

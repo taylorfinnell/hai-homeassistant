@@ -36,6 +36,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import logging
+import re
 import struct
 
 from bleak.backends.device import BLEDevice
@@ -208,16 +209,35 @@ THRESHOLD_SPECS: dict[str, CharacteristicSpec] = {
     spec.key: spec for spec in THRESHOLD_CHARACTERISTICS
 }
 
+COLOR_SPECS: dict[str, CharacteristicSpec] = {
+    spec.key: spec for spec in COLOR_CHARACTERISTICS
+}
+
 
 def format_app_version(raw: int) -> str:
     """Format the raw app version without losing trailing zeros (110 -> 1.10)."""
     return f"{raw // 100}.{raw % 100:02d}"
 
 
+COLOR_PATTERN = r"^#[0-9A-Fa-f]{6}$"
+
+
 def format_color(values: tuple[int, ...]) -> str:
     """Format a decoded RGB triple as #RRGGBB."""
     red, green, blue = values
     return f"#{red:02X}{green:02X}{blue:02X}"
+
+
+def parse_color(value: str) -> tuple[int, int, int]:
+    """Parse #RRGGBB into an RGB triple."""
+    if not re.match(COLOR_PATTERN, value):
+        raise HaiProtocolError(f"{value!r} is not a #RRGGBB colour")
+    digits = value[1:]
+    return (
+        int(digits[0:2], 16),
+        int(digits[2:4], 16),
+        int(digits[4:6], 16),
+    )
 
 
 def decode_threshold(raw_value: int) -> int:
@@ -380,6 +400,14 @@ class HaiProtocolClient:
         stored = await self._async_write_verified(ble_device, spec, payload)
         (stored_value,) = struct.unpack(spec.fmt, stored)
         return stored_value
+
+    async def async_write_color(
+        self, ble_device: BLEDevice, spec: CharacteristicSpec, value: str
+    ) -> str:
+        """Write one LED colour and verify by read-back, returning #RRGGBB."""
+        payload = struct.pack(spec.fmt, *parse_color(value))
+        stored = await self._async_write_verified(ble_device, spec, payload)
+        return format_color(struct.unpack(spec.fmt, stored))
 
     async def _async_write_verified(
         self, ble_device: BLEDevice, spec: CharacteristicSpec, payload: bytes

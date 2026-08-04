@@ -42,6 +42,7 @@ from custom_components.hai.protocol import (
     decode_last_shower,
     format_app_version,
     format_color,
+    parse_color,
     xor_transform,
 )
 
@@ -236,6 +237,15 @@ async def write_with(
         ).async_write_threshold(ble_device, spec, raw_value)
 
 
+async def write_color_with(
+    client: FakeBleakClient, spec: protocol.CharacteristicSpec, value: str
+) -> str:
+    """Run a colour write against a fake client."""
+    ble_device = generate_ble_device(address=ADDRESS, name="haiS0123456", details={})
+    with _fake_connection(client):
+        return await HaiProtocolClient().async_write_color(ble_device, spec, value)
+
+
 def test_xor_round_trip() -> None:
     """The transform is symmetric and matches the pinned sample."""
     assert xor_transform(xor_transform(LAST_SHOWER_PLAIN)) == LAST_SHOWER_PLAIN
@@ -277,6 +287,45 @@ def test_format_color() -> None:
     assert format_color((0, 0, 0)) == "#000000"
     assert format_color((255, 32, 0)) == "#FF2000"
     assert format_color((1, 253, 3)) == "#01FD03"
+
+
+def test_parse_color_round_trips_and_rejects_junk() -> None:
+    """Parsing is the inverse of formatting, and refuses anything else."""
+    for value in ("#000000", "#FF2000", "#01FD03"):
+        assert format_color(parse_color(value)) == value
+    assert parse_color("#ff2000") == (255, 32, 0)
+    for bad in ("", "#FFF", "FF2000", "#GGGGGG", "#FF20000", "not a colour"):
+        with pytest.raises(HaiProtocolError):
+            parse_color(bad)
+
+
+async def test_write_color_verifies_read_back() -> None:
+    """A colour write encodes, requires a response, and reads back."""
+    client = FakeBleakClient(default_payloads())
+    stored = await write_color_with(client, FIRST_LEVEL_COLOR, "#3366FF")
+
+    assert stored == "#3366FF"
+    uuid, payload, response = client.writes[0]
+    assert uuid == FIRST_LEVEL_COLOR.uuid
+    assert payload == xor_transform(bytes((0x33, 0x66, 0xFF)))
+    assert response is True
+    assert client.disconnect_calls == 1
+
+
+async def test_write_color_mismatch_raises() -> None:
+    """A device that reports a different colour fails verification."""
+    client = FakeBleakClient(
+        default_payloads(), stored_override=xor_transform(bytes((1, 2, 3)))
+    )
+    with pytest.raises(HaiWriteVerificationError, match="first_level_color"):
+        await write_color_with(client, FIRST_LEVEL_COLOR, "#3366FF")
+    assert client.disconnect_calls == 1
+
+
+async def test_write_black_verifies_against_literal_zero_readback() -> None:
+    """Writing #000000 survives the firmware's unencrypted-zero quirk."""
+    client = FakeBleakClient(default_payloads(), stored_override=bytes(3))
+    assert await write_color_with(client, FIRST_LEVEL_COLOR, "#000000") == "#000000"
 
 
 def test_composite_record_confirms_the_configuration_encoding() -> None:

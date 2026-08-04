@@ -107,8 +107,10 @@ def make_settings(**overrides: object) -> HaiSettings:
             "temperature_level_color": "#00FF00",
         },
         "raw_hex": {"third_level_threshold": "bd250204"},
+        # Real firmware 6.11 reports every settings characteristic as
+        # read+write, including the composite record.
         "supported_keys": ALL_SETTINGS_KEYS,
-        "writable_keys": frozenset(THRESHOLD_KEYS),
+        "writable_keys": ALL_SETTINGS_KEYS,
     }
     values.update(overrides)
     return HaiSettings(**values)

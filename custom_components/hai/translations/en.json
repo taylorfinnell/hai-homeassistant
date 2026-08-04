@@ -46,23 +46,17 @@
             "current_duration": {
                 "name": "Current shower duration"
             },
-            "current_temperature": {
-                "name": "Current shower temperature"
-            },
             "current_start_time": {
                 "name": "Current shower started"
+            },
+            "current_temperature": {
+                "name": "Current shower temperature"
             },
             "current_volume": {
                 "name": "Current shower volume"
             },
-            "first_level_color": {
-                "name": "First level colour"
-            },
             "flow_rate": {
                 "name": "Flow rate"
-            },
-            "fourth_level_color": {
-                "name": "Fourth level colour"
             },
             "last_shower_duration": {
                 "name": "Last shower duration"
@@ -85,11 +79,19 @@
             "lifetime_volume": {
                 "name": "Lifetime volume"
             },
-            "second_level_color": {
-                "name": "Second level colour"
-            },
             "shower_count": {
                 "name": "Shower count"
+            }
+        },
+        "text": {
+            "first_level_color": {
+                "name": "First level colour"
+            },
+            "fourth_level_color": {
+                "name": "Fourth level colour"
+            },
+            "second_level_color": {
+                "name": "Second level colour"
             },
             "temperature_level_color": {
                 "name": "Temperature level colour"
@@ -102,6 +104,9 @@
     "exceptions": {
         "device_asleep": {
             "message": "{name} is not reachable. The shower head only accepts Bluetooth connections while water is running, so start the shower and try again."
+        },
+        "invalid_color": {
+            "message": "{value} is not a colour. Use the #RRGGBB form, for example #FF2000."
         },
         "setting_never_read": {
             "message": "The current value of {setting} has not been read yet, so a new value cannot be verified. Run the shower until the setting appears, then try again."
