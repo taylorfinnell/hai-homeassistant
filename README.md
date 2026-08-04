@@ -97,7 +97,7 @@ is running.
 | Battery voltage | V | Retained | Diagnostic, disabled by default |
 | Shower active | on/off | Activity | See below |
 | Level 1–4 colour, temperature colour | `#RRGGBB` | Config | Writable — see below |
-| First/second/third level threshold | L | Config | Writable, **disabled by default** — see below |
+| First/second/third level threshold | L | Config | Writable — see below |
 
 **Live** entities have values only while a shower is running *and* the
 integration has completed a fresh read for that shower. Between showers they
@@ -138,9 +138,9 @@ colour — and five entities in the light domain would be swept up by any
 "turn off all the lights" automation, which here would write `#000000` over
 your configuration.
 
-The three thresholds are writable `number` entities, but they **ship disabled**
-because writing has not been exercised on hardware yet. Enable them in the
-entity settings when you want to try it.
+The three consumption thresholds are writable `number` entities in litres.
+They bound the four colour bands: below the first threshold the head shows
+level 1, and above the third it shows level 4.
 
 Contrary to the published protocol notes, this block is XOR-encrypted the same
 way the telemetry is. That was settled against firmware 6.11 using the

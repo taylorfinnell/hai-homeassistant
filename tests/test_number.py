@@ -86,34 +86,10 @@ def threshold_id(hass: HomeAssistant, key: str) -> str:
     return entity_id_for(hass, "number", key)
 
 
-async def enable_threshold_entities(hass: HomeAssistant, entry) -> None:
-    """Thresholds ship disabled by default; enable them for these tests."""
-    registry = er.async_get(hass)
-    changed = False
-    for key in THRESHOLD_KEYS:
-        entity_id = registry.async_get_entity_id(
-            "number", DOMAIN, f"{ADDRESS}-{key}"
-        )
-        if entity_id is None:
-            continue
-        if registry.async_get(entity_id).disabled_by is not None:
-            registry.async_update_entity(entity_id, disabled_by=None)
-            changed = True
-    if changed:
-        await hass.config_entries.async_reload(entry.entry_id)
-        await hass.async_block_till_done()
-
-
 async def setup_with_thresholds(hass: HomeAssistant):
-    """Set up, poll so settings arrive, and enable the numbers.
-
-    Enabling reloads the entry, which builds a fresh coordinator, so a second
-    wake is needed to give that coordinator its own settings read.
-    """
+    """Set up and poll once so the settings read creates the thresholds."""
     entry = await setup_entry(hass)
     await wake_and_poll(hass, advertisement_time=1000.0)
-    await enable_threshold_entities(hass, entry)
-    await wake_and_poll(hass, advertisement_time=1010.0)
     return entry
 
 
@@ -139,18 +115,21 @@ async def test_thresholds_created_after_settings_poll(
     assert entry.entity_category == "config"
 
 
-async def test_thresholds_are_disabled_by_default(
+async def test_thresholds_are_enabled_by_default(
     hass: HomeAssistant, mock_poll: AsyncMock
 ) -> None:
-    """Writes stay off until the decoding has been checked on hardware."""
+    """Thresholds are usable out of the box.
+
+    Merely having the entity writes nothing; a value only reaches the device
+    when the user sets one, and the guards on that path do the protecting.
+    """
     await setup_entry(hass)
     await wake_and_poll(hass)
 
-    registry_entry = er.async_get(hass).async_get(
-        threshold_id(hass, "first_level_threshold")
-    )
-    assert registry_entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
-    assert hass.states.get(threshold_id(hass, "first_level_threshold")) is None
+    for key in THRESHOLD_KEYS:
+        registry_entry = er.async_get(hass).async_get(threshold_id(hass, key))
+        assert registry_entry.disabled_by is None, key
+        assert hass.states.get(threshold_id(hass, key)) is not None, key
 
 
 async def test_threshold_entity_data_is_raw_device_units(
