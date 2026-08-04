@@ -16,7 +16,7 @@ from homeassistant.components.bluetooth.passive_update_processor import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .coordinator import HaiConfigEntry, HaiCoordinator, HaiUpdate
+from .coordinator import HaiConfigEntry, HaiCoordinator, HaiUpdate, HaiUpdateSource
 
 PARALLEL_UPDATES = 0
 
@@ -34,12 +34,25 @@ def binary_sensor_update_to_bluetooth_data_update(
 ) -> PassiveBluetoothDataUpdate[bool]:
     """Convert a HaiUpdate into a processor update for this platform.
 
-    Any update (advertisement or poll) means the device is awake right now.
+    An advertisement only says the device is awake, which normally means water
+    is running. A successful poll knows better: session 0 means no shower is in
+    progress, and that ends the activity immediately instead of waiting out the
+    multi-minute advertisement timeout.
+
+    The running flag is published as entity data rather than derived in the
+    entity so that a change actually reaches the per-key dispatch, which only
+    fires for values that changed.
     """
+    data: dict[PassiveBluetoothEntityKey, bool] = {}
+    if update.source is HaiUpdateSource.ADVERTISEMENT:
+        data[SHOWER_ACTIVE_KEY] = True
+    elif (snapshot := update.snapshot) is not None:
+        data[SHOWER_ACTIVE_KEY] = snapshot.session_id != 0
+
     return PassiveBluetoothDataUpdate(
         devices={None: coordinator.device_info()},
         entity_descriptions={SHOWER_ACTIVE_KEY: SHOWER_ACTIVE_DESCRIPTION},
-        entity_data={SHOWER_ACTIVE_KEY: True},
+        entity_data=data,
     )
 
 
@@ -73,17 +86,21 @@ class HaiShowerActiveEntity(
     PassiveBluetoothProcessorEntity[PassiveBluetoothDataProcessor[bool, HaiUpdate]],
     BinarySensorEntity,
 ):
-    """Shower activity derived from advertisement presence.
+    """Shower activity from advertisement presence, corrected by polls.
 
-    On while the device is advertising; off once Home Assistant declares the
-    broadcaster unavailable, which can take several minutes. A delayed
+    On while the device is advertising, unless a poll has reported that no
+    session is in progress. Off once Home Assistant declares the broadcaster
+    unavailable, which can take several minutes -- so this is still a delayed
     convenience trigger, not a safety signal.
     """
 
     @property
     def is_on(self) -> bool:
-        """Return True while the shower head is advertising."""
-        return self.processor.coordinator.available
+        """Return True while a shower is believed to be running."""
+        if not self.processor.coordinator.available:
+            return False
+        # Absent until the first update; presence alone implies running.
+        return self.processor.entity_data.get(self.entity_key, True)
 
     @property
     def available(self) -> bool:

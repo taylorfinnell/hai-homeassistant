@@ -112,11 +112,13 @@ async def test_successful_poll_populates_entities(
     assert flow_rate.state == "6.0"
     assert flow_rate.attributes[ATTR_UNIT_OF_MEASUREMENT] == "L/min"
 
+    # device_class water + a total state class is what the Water dashboard
+    # requires; the counter never resets, so statistics are safe.
     lifetime_volume = hass.states.get(entity_id_for(hass, "lifetime_volume"))
     assert lifetime_volume.state == "106.348"
     assert lifetime_volume.attributes[ATTR_DEVICE_CLASS] == "water"
     assert lifetime_volume.attributes[ATTR_UNIT_OF_MEASUREMENT] == "L"
-    assert "state_class" not in lifetime_volume.attributes
+    assert lifetime_volume.attributes["state_class"] == "total_increasing"
 
     last_temperature = hass.states.get(
         entity_id_for(hass, "last_shower_temperature")
@@ -127,6 +129,23 @@ async def test_successful_poll_populates_entities(
     last_volume = hass.states.get(entity_id_for(hass, "last_shower_volume"))
     assert last_volume.state == "90000"
     assert ATTR_DEVICE_CLASS not in last_volume.attributes
+
+    shower_count = hass.states.get(entity_id_for(hass, "shower_count"))
+    assert shower_count.state == "29"
+    assert shower_count.attributes["state_class"] == "total_increasing"
+
+    last_start = hass.states.get(entity_id_for(hass, "last_shower_start_time"))
+    assert last_start.state == "2024-02-09T08:00:00+00:00"
+    assert last_start.attributes[ATTR_DEVICE_CLASS] == "timestamp"
+
+    last_initial = hass.states.get(
+        entity_id_for(hass, "last_shower_initial_temperature")
+    )
+    assert last_initial.state == "25.0"
+
+    current_start = hass.states.get(entity_id_for(hass, "current_start_time"))
+    assert current_start.state == "2024-02-10T01:21:40+00:00"
+    assert current_start.attributes[ATTR_DEVICE_CLASS] == "timestamp"
 
     lifetime_average = hass.states.get(
         entity_id_for(hass, "lifetime_average_temperature")
@@ -338,6 +357,55 @@ async def test_reload_restores_retained_and_gates_live(
         assert (
             hass.states.get(entity_id_for(hass, key)).state == STATE_UNAVAILABLE
         ), key
+
+
+async def test_timestamps_survive_a_reload(
+    hass: HomeAssistant, mock_poll: AsyncMock
+) -> None:
+    """Timestamps restore as datetimes, not as the strings they are stored as.
+
+    Processor restore storage round-trips through JSON, so a datetime would
+    come back as a string and break the TIMESTAMP device class. They are
+    stored as ISO strings deliberately and parsed back in native_value.
+    """
+    entry = await setup_entry(hass)
+    await wake_and_poll(hass, advertisement_time=1000.0)
+    entity_id = entity_id_for(hass, "last_shower_start_time")
+    assert hass.states.get(entity_id).state == "2024-02-09T08:00:00+00:00"
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    # No advertisement after the reload, so this is the restored value.
+    assert mock_poll.await_count == 1
+    state = hass.states.get(entity_id)
+    assert state.state == "2024-02-09T08:00:00+00:00"
+    assert state.attributes[ATTR_DEVICE_CLASS] == "timestamp"
+
+
+async def test_current_start_time_is_live(
+    hass: HomeAssistant, mock_poll: AsyncMock
+) -> None:
+    """The running shower's start time belongs to that shower only."""
+    entry = await setup_entry(hass)
+    await wake_and_poll(hass, advertisement_time=1000.0)
+    entity_id = entity_id_for(hass, "current_start_time")
+    assert hass.states.get(entity_id).state == "2024-02-10T01:21:40+00:00"
+
+    coordinator: HaiCoordinator = entry.runtime_data
+    coordinator._async_handle_unavailable(
+        make_service_info(ADDRESS, DEVICE_NAME, advertisement_time=1400.0)
+    )
+    await hass.async_block_till_done()
+
+    assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+    # while the completed shower's start time is retained
+    assert (
+        hass.states.get(entity_id_for(hass, "last_shower_start_time")).state
+        == "2024-02-09T08:00:00+00:00"
+    )
 
 
 async def test_device_registry_gets_polled_metadata(
