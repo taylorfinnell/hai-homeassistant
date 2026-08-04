@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import cast
 
 from homeassistant.components.bluetooth.passive_update_processor import (
@@ -26,6 +27,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .coordinator import HaiConfigEntry, HaiCoordinator, HaiUpdate
 
@@ -80,10 +82,38 @@ SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
         translation_key="lifetime_volume",
         device_class=SensorDeviceClass.WATER,
         native_unit_of_measurement=UnitOfVolume.LITERS,
-        # No state class until the counter's rollover/factory-reset behavior
-        # is hardware-verified; enabling statistics on a counter that resets
-        # would corrupt long-term data.
+        # Verified as a genuine never-reset counter on firmware 6.11: 70,072 L
+        # across 1,039 sessions is ~67 L per shower, matching that device's
+        # last-shower volume. A uint32 of millilitres holds ~4.29 million
+        # litres, roughly 63,000 more showers, and TOTAL_INCREASING copes with
+        # a rollover anyway. This is what the Water dashboard consumes.
+        state_class=SensorStateClass.TOTAL_INCREASING,
         suggested_display_precision=1,
+    ),
+    "shower_count": SensorEntityDescription(
+        key="shower_count",
+        translation_key="shower_count",
+        # The device numbers sessions sequentially, so the last completed
+        # shower's session ID is the lifetime count.
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        icon="mdi:counter",
+    ),
+    "last_shower_start_time": SensorEntityDescription(
+        key="last_shower_start_time",
+        translation_key="last_shower_start_time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+    ),
+    "last_shower_initial_temperature": SensorEntityDescription(
+        key="last_shower_initial_temperature",
+        translation_key="last_shower_initial_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        suggested_display_precision=1,
+    ),
+    "current_start_time": SensorEntityDescription(
+        key="current_start_time",
+        translation_key="current_start_time",
+        device_class=SensorDeviceClass.TIMESTAMP,
     ),
     "lifetime_average_temperature": SensorEntityDescription(
         key="lifetime_average_temperature",
@@ -164,7 +194,16 @@ LIVE_SENSOR_KEYS: frozenset[str] = frozenset(
         "current_volume",
         "current_duration",
         "flow_rate",
+        "current_start_time",
     }
+)
+
+# Timestamps are stored as ISO strings, not datetimes, because processor
+# restore storage round-trips through JSON: a datetime would come back as a
+# string and break the TIMESTAMP device class after any restart. Converted
+# back in native_value instead.
+TIMESTAMP_SENSOR_KEYS: frozenset[str] = frozenset(
+    {"last_shower_start_time", "current_start_time"}
 )
 
 # Keys backed by required characteristics; published with every
@@ -176,16 +215,24 @@ CORE_SENSOR_KEYS: tuple[str, ...] = (
     "current_volume",
     "current_duration",
     "lifetime_volume",
+    "shower_count",
     "last_shower_temperature",
     "last_shower_duration",
     "last_shower_volume",
+    "last_shower_start_time",
+    "last_shower_initial_temperature",
 )
 
 _OPTIONAL_SENSOR_KEYS: tuple[str, ...] = (
     "flow_rate",
     "lifetime_average_temperature",
     "battery_voltage",
+    "current_start_time",
 )
+
+
+def _isoformat(value: datetime | None) -> str | None:
+    return None if value is None else value.isoformat()
 
 
 def _entity_key(key: str) -> PassiveBluetoothEntityKey:
@@ -225,12 +272,20 @@ def sensor_update_to_bluetooth_data_update(
                 ): snapshot.last_shower.temperature_c,
                 _entity_key("last_shower_duration"): snapshot.last_shower.duration_s,
                 _entity_key("last_shower_volume"): snapshot.last_shower.volume_ml,
+                _entity_key("shower_count"): snapshot.last_shower.session_id,
+                _entity_key("last_shower_start_time"): _isoformat(
+                    snapshot.last_shower.start_time
+                ),
+                _entity_key(
+                    "last_shower_initial_temperature"
+                ): snapshot.last_shower.initial_temperature_c,
             }
         )
-        optional_values: dict[str, float | int | None] = {
+        optional_values: dict[str, HaiSensorValue] = {
             "flow_rate": snapshot.current_flow_rate_lpm,
             "lifetime_average_temperature": snapshot.lifetime_average_temperature_c,
             "battery_voltage": snapshot.battery_voltage_v,
+            "current_start_time": _isoformat(snapshot.current_start_time),
         }
         for key in _OPTIONAL_SENSOR_KEYS:
             if key in snapshot.supported_optional_keys:
@@ -290,9 +345,17 @@ class HaiSensorEntity(
         return self.entity_key.key in LIVE_SENSOR_KEYS
 
     @property
-    def native_value(self) -> HaiSensorValue:
-        """Return the latest cached value for this key."""
-        return self.processor.entity_data.get(self.entity_key)
+    def native_value(self) -> HaiSensorValue | datetime:
+        """Return the latest cached value for this key.
+
+        Timestamps are cached as ISO strings so they survive processor restore
+        storage, and are parsed back here because the TIMESTAMP device class
+        requires a datetime.
+        """
+        value = self.processor.entity_data.get(self.entity_key)
+        if self.entity_key.key in TIMESTAMP_SENSOR_KEYS and isinstance(value, str):
+            return dt_util.parse_datetime(value)
+        return value
 
     @property
     def available(self) -> bool:

@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import AsyncMock
 
 from bleak.exc import BleakError
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.core import HomeAssistant
 import pytest
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.hai.coordinator import HaiCoordinator
 
 from .bluetooth import inject_hai_advertisement, make_service_info
-from .conftest import ADDRESS, DEVICE_NAME, entity_id_for, setup_entry
+from .conftest import (
+    ADDRESS,
+    DEVICE_NAME,
+    entity_id_for,
+    make_idle_snapshot,
+    setup_entry,
+)
 
 pytestmark = pytest.mark.usefixtures("enable_bluetooth")
 
@@ -58,6 +67,35 @@ async def test_advertisement_timeout_turns_shower_off_not_unavailable(
     inject_hai_advertisement(hass, ADDRESS, advertisement_time=2000.0)
     await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get(shower_active_id(hass)).state == STATE_ON
+
+
+async def test_session_zero_poll_ends_activity_while_still_advertising(
+    hass: HomeAssistant, mock_poll: AsyncMock, freezer: FrozenDateTimeFactory
+) -> None:
+    """A poll reporting no session ends the shower without waiting.
+
+    Advertising alone only means the head is awake. Waiting for the
+    advertisement timeout costs minutes; a poll that reports session 0 is
+    definitive and takes effect at once.
+    """
+    await setup_entry(hass)
+    inject_hai_advertisement(hass, ADDRESS, advertisement_time=1000.0)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get(shower_active_id(hass)).state == STATE_ON
+
+    mock_poll.return_value = make_idle_snapshot()
+    inject_hai_advertisement(hass, ADDRESS, advertisement_time=1020.0)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    freezer.tick(timedelta(seconds=11))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    # Still advertising, still available -- but off, and not unavailable.
+    entry_coordinator: HaiCoordinator = hass.config_entries.async_entries(
+        "hai"
+    )[0].runtime_data
+    assert entry_coordinator.available is True
+    assert hass.states.get(shower_active_id(hass)).state == STATE_OFF
 
 
 async def test_restored_shower_active_starts_off(

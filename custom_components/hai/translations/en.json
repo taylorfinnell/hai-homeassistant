@@ -49,6 +49,9 @@
             "current_temperature": {
                 "name": "Current shower temperature"
             },
+            "current_start_time": {
+                "name": "Current shower started"
+            },
             "current_volume": {
                 "name": "Current shower volume"
             },
@@ -64,6 +67,12 @@
             "last_shower_duration": {
                 "name": "Last shower duration"
             },
+            "last_shower_initial_temperature": {
+                "name": "Last shower initial temperature"
+            },
+            "last_shower_start_time": {
+                "name": "Last shower started"
+            },
             "last_shower_temperature": {
                 "name": "Last shower temperature"
             },
@@ -78,6 +87,9 @@
             },
             "second_level_color": {
                 "name": "Second level colour"
+            },
+            "shower_count": {
+                "name": "Shower count"
             },
             "temperature_level_color": {
                 "name": "Temperature level colour"

@@ -84,12 +84,16 @@ is running.
 | Current shower average temperature | °C | Live | Aggregate; no statistics |
 | Current shower volume | mL | Live | Resets per shower |
 | Current shower duration | s | Live | |
+| Current shower started | timestamp | Live | Only on firmware that exposes it |
 | Flow rate | L/min | Live | Only on firmware that exposes it |
-| Lifetime volume | L | Retained | Long-term statistics deliberately off until the counter's reset behavior is verified on hardware |
+| Lifetime volume | L | Retained | Feeds the Water dashboard |
 | Lifetime average temperature | °C | Retained | Only on firmware that exposes it |
+| Shower count | — | Retained | Lifetime number of completed showers |
 | Last shower temperature | °C | Retained | |
+| Last shower initial temperature | °C | Retained | How cold the water was at the start |
 | Last shower duration | s | Retained | |
 | Last shower volume | mL | Retained | |
+| Last shower started | timestamp | Retained | |
 | Battery voltage | V | Retained | Diagnostic, disabled by default |
 | Shower active | on/off | Activity | See below |
 | Level 1–4 colour, temperature colour | `#RRGGBB` | Retained | Diagnostic, read-only |
@@ -103,14 +107,19 @@ are unavailable — that is by design, not a bug.
 across Home Assistant restarts. No `input_number` persistence workaround is
 needed anymore.
 
-**Shower active** turns on with the first wake advertisement. It turns off
-when Home Assistant declares the device's advertisements stale, which can
-take several minutes after the water stops. Treat it as a convenience
-trigger for automations, never as a safety signal.
+**Shower active** turns on with the first wake advertisement. It turns off as
+soon as a reading reports that no session is in progress, or failing that when
+Home Assistant declares the device's advertisements stale — which can take
+several minutes after the water stops. Treat it as a convenience trigger for
+automations, never as a safety signal.
 
-The Water dashboard needs a water sensor with long-term statistics; the
-lifetime volume entity will opt in once its rollover/factory-reset behavior
-has been confirmed on hardware.
+**Water dashboard.** Lifetime volume is a water sensor with long-term
+statistics, so it can be added under **Settings → Dashboards → Water**. The
+counter never resets: on firmware 6.11 it read 70,072 L across 1,039 showers,
+about 67 L each, matching that device's last-shower volume. A 32-bit
+millilitre counter holds roughly 4.29 million litres — some 63,000 more
+showers — and the sensor is declared in a way that tolerates a rollover
+regardless.
 
 ### Device settings (experimental)
 
